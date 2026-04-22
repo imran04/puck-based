@@ -379,6 +379,28 @@ function renderComponent(item: PuckItem): string {
   <p class="pb-card__body">${mergeTextToHtml(String(props.body || ""))}</p>
 </article>`;
 
+    case "ConditionalSwitch": {
+      const condition = (props.condition || {}) as {
+        source?: string;
+        predicate?: string;
+      };
+      const label = condition.source
+        ? `${condition.source}${condition.predicate ? ` :: ${condition.predicate}` : ""}`
+        : "Conditional block";
+
+      return `<section class="pb-conditional">
+  <p class="pb-conditional__meta">${escapeHtml(label)}</p>
+  <div class="pb-conditional__branch">
+    <span class="pb-conditional__label">If true</span>
+    ${slot(props.whenTrue)}
+  </div>
+  <div class="pb-conditional__branch pb-conditional__branch--else">
+    <span class="pb-conditional__label">Else</span>
+    ${slot(props.whenFalse)}
+  </div>
+</section>`;
+    }
+
     case "ButtonLink": {
       const className =
         props.variant === "secondary" ? "pb-button pb-button--secondary" : "pb-button";

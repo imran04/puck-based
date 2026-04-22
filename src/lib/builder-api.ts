@@ -18,9 +18,13 @@ type ApiPage = {
 const defaultApiUrl = "http://127.0.0.1:5056";
 const apiBaseUrl = (process.env.BUILDER_API_URL || defaultApiUrl).replace(/\/$/, "");
 
-async function builderFetch<T>(path: string, init?: RequestInit): Promise<T | null> {
+async function builderFetch<T>(
+  path: string,
+  init?: RequestInit,
+  timeoutMs = 5000,
+): Promise<T | null> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 900);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(`${apiBaseUrl}${path}`, {
@@ -72,17 +76,36 @@ export async function saveApiDraftPage(pageId: string, title: string, data: Data
 }
 
 export async function publishApiPage(pageId: string, title: string, data: Data, bundle?: TemplateBundle) {
-  return builderFetch<ApiPage>(`/api/pages/${encodeURIComponent(pageId)}/publish`, {
-    method: "POST",
-    body: JSON.stringify({
-      title,
-      slug: pageId,
-      data,
-      dataSourceMapJson: bundle?.dataSourceMapJson ?? null,
-      razorTemplate: bundle?.razorTemplate ?? null,
-      csharpSource: bundle?.csharpSource ?? null,
-    }),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20000);
+
+  try {
+    const response = await fetch(`${apiBaseUrl}/api/pages/${encodeURIComponent(pageId)}/publish`, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        title,
+        slug: pageId,
+        data,
+        dataSourceMapJson: bundle?.dataSourceMapJson ?? null,
+        razorTemplate: bundle?.razorTemplate ?? null,
+        csharpSource: bundle?.csharpSource ?? null,
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      throw new Error(errorBody || `Builder API ${response.status}`);
+    }
+
+    return (await response.json()) as ApiPage;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function listApiReusableBlocks(kind?: ReusableBlockKind) {

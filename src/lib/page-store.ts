@@ -287,6 +287,9 @@ export async function publishPage(pageId: string, data: Data, bundle?: TemplateB
   };
 
   await writePage(nextPage);
-  await publishApiPage(pageId, title, normalizedData, bundle);
+  const apiPage = await publishApiPage(pageId, title, normalizedData, bundle);
+  if (!apiPage) {
+    throw new Error("Publish did not complete on Builder API.");
+  }
   return nextPage;
 }

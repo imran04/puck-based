@@ -568,6 +568,48 @@ a {
   text-align: center;
 }
 
+.pb-conditional {
+  display: grid;
+  gap: 10px;
+  border: 1px dashed #bdd3f9;
+  border-radius: 8px;
+  background: #f8fbff;
+  padding: 14px;
+}
+
+.pb-conditional__meta {
+  margin: 0;
+  color: var(--pb-muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.pb-conditional__branch {
+  display: grid;
+  gap: 12px;
+  border: 1px dashed var(--pb-border);
+  border-radius: 8px;
+  background: white;
+  padding: 12px;
+}
+
+.pb-conditional__branch--else {
+  border-style: solid;
+  border-color: #ebddb8;
+  background: #fffbf1;
+}
+
+.pb-conditional__label {
+  width: fit-content;
+  border-radius: 8px;
+  background: #e8f1ff;
+  color: #0d4fd1;
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1;
+  padding: 5px 8px;
+}
+
 .pb-reusable .pb-page {
   min-height: 0;
 }

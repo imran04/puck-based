@@ -9,6 +9,72 @@
 
 ---
 
+## Placeholder DSL (Documented, Pending Implementation)
+
+This section documents the approved placeholder syntax to be implemented later.
+
+### 1) Single datasource placeholder
+
+Use:
+
+```text
+name.propertyName
+```
+
+Meaning:
+- `name` is the datasource key
+- `propertyName` is the field to render from the single record object
+
+### 2) List datasource placeholder (lambda predicate)
+
+Use:
+
+```text
+name.predicate(x => <condition>).propertyName
+```
+
+Meaning:
+- `name` is the datasource key
+- `predicate(...)` accepts a lambda expression
+- Runtime selects the **first** record that matches the predicate
+- `propertyName` is read from that first matched record
+
+### 3) Null/empty behavior
+
+If datasource, match, or property is missing, renderer should return an empty string (safe fallback, no throw).
+
+### 4) Razor/ViewBag mapping intent
+
+The DSL remains author-facing syntax in content/templates, and publish/render conversion should inject values from `ViewBag` at runtime using the above evaluation semantics.
+
+---
+
+## Conditional Block (Implemented)
+
+Implemented as `ConditionalSwitch` in the Puck editor and publish pipeline.
+
+### 1) Activation gate
+
+The condition builder UI activates only when at least one datasource is configured on the page.
+If none are configured, the field shows a guidance state and does not allow rule setup.
+
+### 2) Query requirement
+
+Condition logic is generated through a structured builder (source/field/operator/value) and emitted as a lambda-style expression:
+
+```text
+x => x.Field == "Value"
+```
+
+### 3) Runtime behavior
+
+- Publish HTML includes markers: `{DS_IF:source|predicate}...{DS_ELSE}...{DS_ENDIF}`
+- Generated C# renderer evaluates predicate against datasource rows at runtime
+- Renders `if` branch when true, `else` branch when false
+- Missing/invalid source or predicate fails safely (no throw), resulting in false branch or empty fallback
+
+---
+
 ## Backend (api/Builder.Api/)
 
 - **New models:** `TableDefinition`, `TableRelation`, `DynamicRow`, `DynamicRelationRow`

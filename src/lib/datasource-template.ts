@@ -35,6 +35,23 @@ export type DsBinding = {
 
 export type DsBindings = Record<string, DsBinding>;
 
+export type ConditionOperator =
+  | "eq"
+  | "neq"
+  | "contains"
+  | "startsWith"
+  | "endsWith"
+  | "gt"
+  | "lt";
+
+export type ConditionalRule = {
+  source: string;
+  field: string;
+  operator: ConditionOperator;
+  value: string;
+  predicate: string;
+};
+
 // ── HTML marker helpers ────────────────────────────────────────────────────
 
 /** Returns a datasource marker for a single-record field binding */
@@ -58,6 +75,13 @@ function escHtml(v: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function sanitizePredicateMarker(value: string) {
+  return String(value || "")
+    .replace(/[{}]/g, "")
+    .replace(/\r?\n/g, " ")
+    .trim();
 }
 
 function renderItemWithMarkers(item: PuckItem): string {
@@ -123,6 +147,20 @@ function renderItemWithMarkers(item: PuckItem): string {
         : `<div class="pb-card-grid">{DS_LIST_START:${source}}${itemHtml}{DS_LIST_END}</div>`;
 
       return wrapper;
+    }
+
+    case "ConditionalSwitch": {
+      const condition = (props.condition as Partial<ConditionalRule> | undefined) ?? {};
+      const source = String(condition.source || "");
+      const predicate = sanitizePredicateMarker(String(condition.predicate || ""));
+      const whenTrue = renderItemsWithMarkers((props.whenTrue as PuckItem[]) ?? []);
+      const whenFalse = renderItemsWithMarkers((props.whenFalse as PuckItem[]) ?? []);
+
+      if (!source || !predicate) {
+        return `<div class="pb-empty-state">Configure datasource and predicate for this conditional block.</div>`;
+      }
+
+      return `<section class="pb-conditional">{DS_IF:${source}|${predicate}}${whenTrue}{DS_ELSE}${whenFalse}{DS_ENDIF}</section>`;
     }
 
     case "Section": {
@@ -218,8 +256,10 @@ function buildCshtml(
       : `    var ${ds.name} = (ViewBag.${ds.name} as IEnumerable<IDictionary<string, object?>>) ?? Array.Empty<IDictionary<string, object?>>();`,
   ).join("\n");
 
-  // Convert {DS:source.field} markers to @ViewBag expressions
+  // Convert conditional/list/single datasource markers to CSHTML-friendly syntax.
   const cshtmlBody = bodyHtml
+    .replace(/\{DS_IF:([^|}]+)\|([^}]*)\}([\s\S]*?)(?:\{DS_ELSE\}([\s\S]*?))?\{DS_ENDIF\}/g, (_, src, pred, ifHtml, elseHtml) =>
+      `@* IF ${src} :: ${pred} *@${ifHtml}${elseHtml ? `@* ELSE *@${elseHtml}` : ""}@* ENDIF *@`)
     .replace(/\{DS:([^.}]+)\.([^}]+)\}/g, (_, src, fld) =>
       `@(ViewBag.${src} is IDictionary<string,object?> _${src}_${fld} ? (_${src}_${fld}.TryGetValue("${fld}", out var _v_${src}_${fld}) ? _v_${src}_${fld}?.ToString() ?? "" : "") : "")`)
     .replace(/\{DS_LIST_START:([^}]+)\}/g, (_, src) =>
@@ -255,6 +295,8 @@ function buildCsharpRenderer(templateHtml: string): string {
 
   return `using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -272,23 +314,123 @@ public static class PageRenderer
         @"\\{DS_LIST_START:([^}]+)\\}(.*?)\\{DS_LIST_END\\}",
         RegexOptions.Compiled | RegexOptions.Singleline);
 
+    private static readonly Regex _ifBlock = new(
+        @"\\{DS_IF:([^|}]+)\\|([^}]*)\\}(.*?)(?:\\{DS_ELSE\\}(.*?))?\\{DS_ENDIF\\}",
+        RegexOptions.Compiled | RegexOptions.Singleline);
+
     private static readonly Regex _item = new(
         @"\\{DS_ITEM:([^}]+)\\}", RegexOptions.Compiled);
 
+    private static readonly Regex _predicate = new(
+        @"^\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*=>\\s*\\1\\.([A-Za-z_][A-Za-z0-9_]*)\\s*(==|!=|>|<|contains|startsWith|endsWith)\\s*(.+?)\\s*$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     public static string Render(IReadOnlyDictionary<string, object?> vb)
     {
-        static string V(IReadOnlyDictionary<string, object?>? row, string k) =>
-            row?.TryGetValue(k, out var v) == true ? (v?.ToString() ?? "") : "";
+        static string V(IReadOnlyDictionary<string, object?>? row, string k)
+        {
+            if (row is null) return "";
+            if (row.TryGetValue(k, out var exact)) return exact?.ToString() ?? "";
+            var fallback = row.FirstOrDefault(entry => string.Equals(entry.Key, k, StringComparison.OrdinalIgnoreCase));
+            return fallback.Key is null ? "" : fallback.Value?.ToString() ?? "";
+        }
 
-        static IReadOnlyDictionary<string, object?>? SingleRow(string k) =>
+        IReadOnlyDictionary<string, object?>? SingleRow(string k) =>
             vb.TryGetValue(k, out var v) && v is IReadOnlyDictionary<string, object?> r ? r : null;
 
-        static IEnumerable<IReadOnlyDictionary<string, object?>> Rows(string k) =>
+        IEnumerable<IReadOnlyDictionary<string, object?>> Rows(string k) =>
             vb.TryGetValue(k, out var v) && v is IEnumerable<IReadOnlyDictionary<string, object?>> rs
                 ? rs : Array.Empty<IReadOnlyDictionary<string, object?>>();
 
+        static string NormalizeLiteral(string literal)
+        {
+            var value = literal.Trim();
+            if ((value.StartsWith("\"") && value.EndsWith("\"")) || (value.StartsWith("'") && value.EndsWith("'")))
+                return value.Substring(1, value.Length - 2);
+            return value;
+        }
+
+        static bool CompareValue(string left, string op, string right)
+        {
+            if (op.Equals("contains", StringComparison.OrdinalIgnoreCase))
+                return left.Contains(right, StringComparison.OrdinalIgnoreCase);
+            if (op.Equals("startsWith", StringComparison.OrdinalIgnoreCase))
+                return left.StartsWith(right, StringComparison.OrdinalIgnoreCase);
+            if (op.Equals("endsWith", StringComparison.OrdinalIgnoreCase))
+                return left.EndsWith(right, StringComparison.OrdinalIgnoreCase);
+
+            if (decimal.TryParse(left, NumberStyles.Any, CultureInfo.InvariantCulture, out var leftNum) &&
+                decimal.TryParse(right, NumberStyles.Any, CultureInfo.InvariantCulture, out var rightNum))
+            {
+                return op switch
+                {
+                    "==" => leftNum == rightNum,
+                    "!=" => leftNum != rightNum,
+                    ">"  => leftNum > rightNum,
+                    "<"  => leftNum < rightNum,
+                    _    => false,
+                };
+            }
+
+            var cmp = string.Compare(left, right, StringComparison.OrdinalIgnoreCase);
+            return op switch
+            {
+                "==" => cmp == 0,
+                "!=" => cmp != 0,
+                ">"  => cmp > 0,
+                "<"  => cmp < 0,
+                _    => false,
+            };
+        }
+
+        static bool MatchesPredicate(IReadOnlyDictionary<string, object?> row, string predicate)
+        {
+            if (string.IsNullOrWhiteSpace(predicate))
+                return false;
+
+            var match = _predicate.Match(predicate);
+            if (!match.Success)
+                return false;
+
+            var field = match.Groups[2].Value;
+            var op = match.Groups[3].Value;
+            var right = NormalizeLiteral(match.Groups[4].Value);
+            var left = V(row, field);
+            return CompareValue(left, op, right);
+        }
+
+        bool EvaluateCondition(string source, string predicate)
+        {
+            if (vb.TryGetValue(source, out var sourceValue))
+            {
+                if (sourceValue is IReadOnlyDictionary<string, object?> oneRow)
+                    return MatchesPredicate(oneRow, predicate);
+
+                if (sourceValue is IEnumerable<IReadOnlyDictionary<string, object?>> manyRows)
+                {
+                    foreach (var row in manyRows)
+                    {
+                        if (MatchesPredicate(row, predicate))
+                            return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        // Resolve conditional blocks first so branch content can still contain list/single markers.
+        var output = _ifBlock.Replace(Template, m =>
+        {
+            var source = m.Groups[1].Value;
+            var predicate = m.Groups[2].Value;
+            var ifHtml = m.Groups[3].Value;
+            var elseHtml = m.Groups[4].Success ? m.Groups[4].Value : "";
+            return EvaluateCondition(source, predicate) ? ifHtml : elseHtml;
+        });
+
         // Resolve list blocks first (they contain nested DS_ITEM markers)
-        var output = _listBlock.Replace(Template, m =>
+        output = _listBlock.Replace(output, m =>
         {
             var name  = m.Groups[1].Value;
             var block = m.Groups[2].Value;

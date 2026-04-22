@@ -136,7 +136,7 @@ app.MapPost("/api/pages", async (CreatePageRequest request, BuilderDbContext db)
     if (await db.Pages.AsNoTracking().AnyAsync(p => p.Id == pageId))
         return Results.Conflict(new { error = "Page already exists" });
 
-    var page = await UpsertPage(
+    var (page, _) = await UpsertPage(
         pageId,
         new PublishPageRequest(request.Title, request.Slug ?? pageId, request.Data, null, null, null),
         db,
@@ -159,7 +159,7 @@ app.MapPut("/api/pages/{id}/draft", async (string id, PublishPageRequest request
     if (request.Data.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
         return Results.BadRequest(new { error = "Missing Puck data" });
 
-    var page = await UpsertPage(id, request, db, publish: false, compiler: null);
+    var (page, _) = await UpsertPage(id, request, db, publish: false, compiler: null);
     return page is null
         ? Results.Conflict(new { error = "Slug is already used by another page" })
         : Results.Ok(PageDto.FromEntity(page));
@@ -170,7 +170,16 @@ app.MapPost("/api/pages/{id}/publish", async (string id, PublishPageRequest requ
     if (request.Data.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
         return Results.BadRequest(new { error = "Missing Puck data" });
 
-    var page = await UpsertPage(id, request, db, publish: true, compiler: compiler);
+    if (string.IsNullOrWhiteSpace(request.CsharpSource))
+        return Results.BadRequest(new { error = "Missing generated C# renderer source. Re-publish from the builder." });
+
+    if (string.IsNullOrWhiteSpace(request.DataSourceMapJson))
+        return Results.BadRequest(new { error = "Missing datasource map JSON. Re-publish from the builder." });
+
+    var (page, compileError) = await UpsertPage(id, request, db, publish: true, compiler: compiler);
+    if (!string.IsNullOrWhiteSpace(compileError))
+        return Results.BadRequest(new { error = "Renderer compile failed", details = compileError });
+
     return page is null
         ? Results.Conflict(new { error = "Slug is already used by another page" })
         : Results.Ok(PageDto.FromEntity(page));
@@ -560,13 +569,14 @@ app.Run();
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-static async Task<Page?> UpsertPage(
+static async Task<(Page? Page, string? CompileError)> UpsertPage(
     string id,
     PublishPageRequest request,
     BuilderDbContext db,
     bool publish,
     RazorCompiler? compiler)
 {
+    string? compileError = null;
     var now = DateTimeOffset.UtcNow;
     var page = await db.Pages.FirstOrDefaultAsync(p => p.Id == id);
     var title = string.IsNullOrWhiteSpace(request.Title) ? "Puck Studio Page" : request.Title.Trim();
@@ -574,7 +584,7 @@ static async Task<Page?> UpsertPage(
     var rawData = request.Data.GetRawText();
     var slugConflict = await db.Pages.AsNoTracking().AnyAsync(p => p.Slug == slug && p.Id != id);
 
-    if (slugConflict) return null;
+    if (slugConflict) return (null, null);
 
     if (page is null)
     {
@@ -607,12 +617,18 @@ static async Task<Page?> UpsertPage(
         {
             var result = compiler.Compile(request.CsharpSource);
             if (result.Success)
+            {
                 page.CompiledAssemblyBytes = result.AssemblyBytes;
+            }
+            else
+            {
+                compileError = result.Error ?? "Unknown renderer compile failure.";
+            }
         }
     }
 
     await db.SaveChangesAsync();
-    return page;
+    return (page, compileError);
 }
 
 static string SafePageId(string value)

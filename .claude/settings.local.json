@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc *)",
+      "Bash(dotnet build *)",
+      "Bash(netstat -ano)",
+      "Bash(taskkill /PID 35420 /F)",
+      "Bash(taskkill /PID 37200 /F)",
+      "Bash(npm run *)",
+      "Bash(echo \"API server starting \\(PID $!\\)\")",
+      "Bash(echo \"Next.js starting \\(PID $!\\)\")",
+      "Bash(curl -s http://127.0.0.1:5056/health)",
+      "Bash(curl -s http://127.0.0.1:5056/api/tables)",
+      "Bash(taskkill /PID 30132 /F)",
+      "Bash(kill 30132)",
+      "Bash(dotnet run *)",
+      "PowerShell(Stop-Process -Force)",
+      "Bash(curl -s -X POST http://127.0.0.1:5056/api/tables -H 'Content-Type: application/json' -d '{\"name\":\"products\",\"displayName\":\"Products\",\"columns\":[{\"name\":\"title\",\"displayName\":\"Title\",\"type\":\"text\",\"required\":true}]}')",
+      "Bash(curl -s -X POST http://127.0.0.1:5056/api/tables/6288ca53-96cc-4de4-8d6b-d1d68f5c2c31/rows -H 'Content-Type: application/json' -d '{\"data\":{\"title\":\"Widget\",\"price\":\"9.99\"}}')",
+      "Bash(curl -s http://127.0.0.1:5056/api/tables/6288ca53-96cc-4de4-8d6b-d1d68f5c2c31/rows)",
+      "Bash(npx next *)"
+    ]
+  }
+}

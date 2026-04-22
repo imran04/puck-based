@@ -1,11 +1,16 @@
 import { Render, type Config, type RichtextField } from "@puckeditor/core";
 import type { CSSProperties, ReactNode } from "react";
+import { ConditionalRuleFieldRenderer } from "@/components/ConditionalRuleFieldRenderer";
 import { DsBindingsFieldRenderer } from "@/components/DsBindingsFieldRenderer";
 import { FormDesignerModalField } from "@/components/FormDesignerModalField";
 import { MergeTextField } from "@/components/MergeTextField";
 import { ReusableBlockPicker } from "@/components/ReusableBlockPicker";
 import { DataSourceManager } from "@/components/DataSourcePanel";
-import type { DataSourceDefinition, DsBindings } from "@/lib/datasource-template";
+import type {
+  ConditionalRule,
+  DataSourceDefinition,
+  DsBindings,
+} from "@/lib/datasource-template";
 import type { ReusableBlock } from "@/lib/reusable-blocks";
 import { safeLinkUrl, safeMediaUrl } from "@/lib/url";
 import { FormBlock, type FormBlockProps } from "./form";
@@ -328,12 +333,48 @@ function dsBindingsField(bindableFields: string[]) {
   };
 }
 
+function conditionalRuleField() {
+  return {
+    type: "custom" as const,
+    label: "Condition",
+    render: ({
+      value,
+      onChange,
+      readOnly,
+    }: {
+      value?: ConditionalRule;
+      onChange: (v: ConditionalRule) => void;
+      readOnly?: boolean;
+    }) => (
+      <ConditionalRuleFieldRenderer
+        onChange={onChange}
+        readOnly={readOnly}
+        value={value}
+      />
+    ),
+  };
+}
+
 type DynamicListProps = {
   source: string;
   titleField: string;
   bodyField: string;
   urlField: string;
   layout: "cards" | "table" | "list";
+};
+
+type ConditionalSwitchProps = {
+  condition: ConditionalRule;
+  whenTrue: Slot;
+  whenFalse: Slot;
+};
+
+const defaultConditionalRule: ConditionalRule = {
+  source: "",
+  field: "",
+  operator: "eq",
+  value: "",
+  predicate: "",
 };
 
 export const puckConfig: Config = {
@@ -362,6 +403,7 @@ export const puckConfig: Config = {
         "RichText",
         "FeatureCard",
         "DynamicList",
+        "ConditionalSwitch",
         "ButtonLink",
         "ImageBlock",
         "VideoEmbed",
@@ -1569,6 +1611,62 @@ export const puckConfig: Config = {
               ))
             )}
           </div>
+        );
+      },
+    },
+    ConditionalSwitch: {
+      label: "If / else",
+      fields: {
+        condition: conditionalRuleField(),
+        whenTrue: { type: "slot" },
+        whenFalse: { type: "slot" },
+      },
+      defaultProps: {
+        condition: defaultConditionalRule,
+        whenTrue: [
+          {
+            type: "Callout",
+            props: {
+              title: "Condition matched",
+              body: "This content renders when the datasource query evaluates to true.",
+              tone: "success",
+            },
+          },
+        ],
+        whenFalse: [
+          {
+            type: "Callout",
+            props: {
+              title: "Condition did not match",
+              body: "This branch renders when the datasource query evaluates to false.",
+              tone: "warning",
+            },
+          },
+        ],
+      },
+      render: (props) => {
+        const {
+          condition,
+          whenTrue: WhenTrue,
+          whenFalse: WhenFalse,
+        } = asProps<ConditionalSwitchProps>(props);
+        const hasSource = Boolean(condition?.source);
+        const summary = hasSource
+          ? `${condition.source} :: ${condition.predicate || "x => x.field == \"value\""}`
+          : "Add a datasource and predicate in block settings.";
+
+        return (
+          <section className="pb-conditional">
+            <p className="pb-conditional__meta">{summary}</p>
+            <div className="pb-conditional__branch">
+              <span className="pb-conditional__label">If true</span>
+              <WhenTrue />
+            </div>
+            <div className="pb-conditional__branch pb-conditional__branch--else">
+              <span className="pb-conditional__label">Else</span>
+              <WhenFalse />
+            </div>
+          </section>
         );
       },
     },

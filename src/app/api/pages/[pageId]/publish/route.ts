@@ -16,6 +16,11 @@ export async function POST(
   // Generate Razor CSHTML + C# renderer + datasource map from the Puck JSON
   const bundle = buildTemplateBundle(body.data);
 
-  const page = await publishPage(pageId, body.data, bundle);
-  return Response.json({ page });
+  try {
+    const page = await publishPage(pageId, body.data, bundle);
+    return Response.json({ page });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Publish failed";
+    return Response.json({ error: message }, { status: 502 });
+  }
 }
