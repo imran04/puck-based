@@ -13,12 +13,24 @@
 # testing
 /coverage
 
+# local file-backed CMS data
+/data/
+
+# local QA artifacts
+/.qa/
+.next-start*.log
+.api-start*.log
+
 # next.js
 /.next/
 /out/
 
 # production
 /build
+
+# .NET build output
+**/bin/
+**/obj/
 
 # misc
 .DS_Store

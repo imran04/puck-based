@@ -1,36 +1,56 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Puck Studio
 
-## Getting Started
+A Next.js 16 + Puck page builder with first-party forms, reusable saved blocks, MSSQL-backed storage, and HTML export.
 
-First, run the development server:
+## Run
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Run the ASP.NET API in another terminal when you want MSSQL persistence:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run api:dev
+```
 
-## Learn More
+The API listens on `http://127.0.0.1:5056` and creates a LocalDB database named `PuckBuilder` by default.
 
-To learn more about Next.js, take a look at the following resources:
+## Routes
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- `/` - builder dashboard
+- `/api/pages` - list/create pages for the dashboard
+- `/builder/pages/home` - Puck WYSIWYG editor
+- `/p/home` - published page render
+- `/api/pages/home/export` - standalone HTML export
+- `/api/forms/submit` - placeholder form submission endpoint
+- `/api/custom-blocks` - Next proxy for saved sections/forms
+- ASP.NET API: `/api/pages/{id}`, `/api/custom-blocks`, `/api/form-submissions`
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Storage
 
-## Deploy on Vercel
+- Next uses `BUILDER_API_URL` when set, or `http://127.0.0.1:5056` by default.
+- The ASP.NET app uses MSSQL LocalDB: `(localdb)\MSSQLLocalDB`, database `PuckBuilder`.
+- If the API is not running, Next falls back to ignored local JSON files under `data/`.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Builder Security
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Set `BUILDER_TOKEN` in deployed environments to protect `/builder/*` and the publish API.
+
+With a token set, open the builder once with:
+
+```text
+/builder/pages/home?token=YOUR_TOKEN
+```
+
+The app stores the token in an HTTP-only cookie for later same-origin publish requests.
+
+## Notes
+
+- Puck owns the drag-and-drop editor surface.
+- The form block is first-party JSON, not Form.io or SurveyJS.
+- The Library action can save sections and forms as reusable snapshots.
+- HTML export serializes the Puck JSON into portable markup with embedded CSS.

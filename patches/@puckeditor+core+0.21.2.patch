@@ -1,0 +1,45 @@
+diff --git a/node_modules/@puckeditor/core/dist/chunk-PK2F2YZX.mjs b/node_modules/@puckeditor/core/dist/chunk-PK2F2YZX.mjs
+index 0ba0c20..c80149b 100644
+--- a/node_modules/@puckeditor/core/dist/chunk-PK2F2YZX.mjs
++++ b/node_modules/@puckeditor/core/dist/chunk-PK2F2YZX.mjs
+@@ -3867,10 +3867,6 @@ var DragDropContext = ({
+   children,
+   disableAutoScroll
+ }) => {
+-  const status = useAppStore((s) => s.status);
+-  if (status === "LOADING") {
+-    return children;
+-  }
+   return /* @__PURE__ */ jsx23(DragDropContextClient, { disableAutoScroll, children });
+ };
+ 
+diff --git a/node_modules/@puckeditor/core/dist/index.js b/node_modules/@puckeditor/core/dist/index.js
+index 624c3ff..de7283f 100644
+--- a/node_modules/@puckeditor/core/dist/index.js
++++ b/node_modules/@puckeditor/core/dist/index.js
+@@ -11014,10 +11014,6 @@ var DragDropContext = ({
+   children,
+   disableAutoScroll
+ }) => {
+-  const status = useAppStore((s) => s.status);
+-  if (status === "LOADING") {
+-    return children;
+-  }
+   return /* @__PURE__ */ (0, import_jsx_runtime69.jsx)(DragDropContextClient, { disableAutoScroll, children });
+ };
+ 
+diff --git a/node_modules/@puckeditor/core/dist/no-external.js b/node_modules/@puckeditor/core/dist/no-external.js
+index 9cac7ae..f86e7bc 100644
+--- a/node_modules/@puckeditor/core/dist/no-external.js
++++ b/node_modules/@puckeditor/core/dist/no-external.js
+@@ -11014,10 +11014,6 @@ var DragDropContext = ({
+   children,
+   disableAutoScroll
+ }) => {
+-  const status = useAppStore((s) => s.status);
+-  if (status === "LOADING") {
+-    return children;
+-  }
+   return /* @__PURE__ */ (0, import_jsx_runtime69.jsx)(DragDropContextClient, { disableAutoScroll, children });
+ };
+ 
