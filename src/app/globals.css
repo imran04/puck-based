@@ -307,6 +307,11 @@ body {
   gap: 8px;
 }
 
+.studio-puck__tools--header {
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+
 .studio-puck__tools button,
 .studio-puck__tools a {
   display: inline-flex;
@@ -444,6 +449,24 @@ body {
 .form-designer-field__summary > button {
   background: #171717;
   color: #ffffff;
+}
+
+.form-designer-field__notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid #d9dee5;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 10px 12px;
+}
+
+.form-designer-field__notice p {
+  margin: 0;
+  color: #5f6368;
+  font-size: 0.8rem;
+  font-weight: 700;
 }
 
 .form-modal {
@@ -594,6 +617,13 @@ body {
   font-weight: 900;
 }
 
+.form-modal__editor label small {
+  color: #5f6368;
+  font-size: 0.74rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
 .form-modal__editor input,
 .form-modal__editor select,
 .form-modal__editor textarea {
@@ -611,6 +641,49 @@ body {
 .form-modal__editor textarea {
   min-height: 90px;
   resize: vertical;
+}
+
+.form-modal__datasource {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #d9dee5;
+  border-radius: 8px;
+  background: #f7f9fc;
+  padding: 12px;
+}
+
+.form-modal__datasource p {
+  margin: 0;
+  color: #2f343a;
+  font-size: 0.82rem;
+  font-weight: 900;
+}
+
+.form-modal__datasource small {
+  color: #5f6368;
+  line-height: 1.45;
+}
+
+.form-modal__datasource-empty {
+  display: grid;
+  gap: 8px;
+  border: 1px dashed #c7d5ed;
+  border-radius: 8px;
+  background: #edf4ff;
+  padding: 10px;
+}
+
+.form-modal__datasource-empty p {
+  margin: 0;
+  color: #2b3b59;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.form-modal__two {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .form-modal__check {
@@ -967,5 +1040,9 @@ body {
     border-right: 0;
     border-bottom: 1px solid #d9dee5;
     max-height: 220px;
+  }
+
+  .form-modal__two {
+    grid-template-columns: 1fr;
   }
 }

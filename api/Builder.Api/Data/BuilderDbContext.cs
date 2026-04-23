@@ -45,8 +45,13 @@ public sealed class BuilderDbContext(DbContextOptions<BuilderDbContext> options)
         {
             entity.ToTable("FormSubmissions");
             entity.HasKey(s => s.Id);
+            entity.Property(s => s.PageId).HasMaxLength(128);
+            entity.Property(s => s.PageSlug).HasMaxLength(256);
+            entity.Property(s => s.FormId).HasMaxLength(128);
             entity.Property(s => s.FormTitle).HasMaxLength(256);
             entity.Property(s => s.PayloadJson).HasColumnType("nvarchar(max)");
+            entity.Property(s => s.RelayStatus).HasMaxLength(64);
+            entity.HasIndex(s => new { s.PageId, s.FormId, s.CreatedAt });
             entity.HasIndex(s => s.CreatedAt);
         });
 

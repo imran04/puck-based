@@ -18,7 +18,9 @@ public sealed class Page
 
     public DateTimeOffset? PublishedAt { get; set; }
 
-    /// <summary>JSON array of DataSourceDefinition objects extracted from root.props.dataSources</summary>
+    /// <summary>
+    /// JSON object containing displaySources (with legacy dataSources alias).
+    /// </summary>
     public string? DataSourceMapJson { get; set; }
 
     /// <summary>Human-readable Razor CSHTML template with @ViewBag syntax (stored as artifact)</summary>

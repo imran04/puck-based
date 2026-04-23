@@ -47,6 +47,46 @@ If datasource, match, or property is missing, renderer should return an empty st
 
 The DSL remains author-facing syntax in content/templates, and publish/render conversion should inject values from `ViewBag` at runtime using the above evaluation semantics.
 
+### 5) Merge tag pipe operators (documented first)
+
+Pipes are supported on datasource merge tags and are evaluated in the publish/render pipeline.
+
+Syntax:
+
+```text
+{{source.field | pipeA | pipeB:arg1:arg2}}
+{{source[index].field | pipeA | pipeB:arg1}}
+```
+
+The datasource name must match the configured source name exactly (no singular/plural rewrite).
+
+Initial supported pipes:
+
+- `trim`
+- `upper`
+- `lower`
+- `date:<format>` (example format: `yyyy-MM-dd`)
+- `truncate:<length>[:suffix]`
+- `default:<value>`
+- `json`
+
+Examples:
+
+```text
+{{product.title | trim}}
+{{products[index].title | upper}}
+{{product.createdAt | date:yyyy-MM-dd}}
+{{product.description | truncate:120:...}}
+{{product.subtitle | default:NA}}
+{{product | json}}
+```
+
+Safe fallback:
+
+- unknown pipes are ignored
+- invalid args do not throw; value falls back to current string value
+- missing datasource/property resolves to empty string as before
+
 ---
 
 ## Conditional Block (Implemented)
@@ -72,6 +112,153 @@ x => x.Field == "Value"
 - Generated C# renderer evaluates predicate against datasource rows at runtime
 - Renders `if` branch when true, `else` branch when false
 - Missing/invalid source or predicate fails safely (no throw), resulting in false branch or empty fallback
+
+---
+
+## Runtime Form Handler (Implemented First Pass)
+
+Rendered forms must submit through our server first. This applies to the ASP.NET render page flow, not only the Puck editor preview.
+
+### 1) Server-owned submit endpoint
+
+Rendered forms should always post to a first-party handler, for example:
+
+```text
+POST /api/forms/runtime-submit
+```
+
+The browser should not post directly to the configured external `actionUrl`.
+
+Each rendered form must include hidden identifiers:
+
+- `_pbPageId`
+- `_pbPageSlug`
+- `_pbFormId`
+- `_pbFormTitle`
+- optional `_pbRenderVersion` or publish timestamp when available
+
+These identifiers let the backend recognize which rendered page and form block produced the submission.
+
+### 2) Form datasource writeback
+
+A form can attach to **one datasource** as its data sink.
+
+Form-level metadata:
+
+```ts
+type FormDataSink = {
+  source: string;
+  tableId: string;
+  fieldMappings: Array<{
+    formField: string;
+    tableColumn: string;
+  }>;
+};
+```
+
+Submit behavior:
+
+- Validate and normalize submitted field names
+- Build a row object using explicit mappings
+- If no explicit mapping exists for a field, optionally map by matching `formField.name` to table column name
+- Insert a new `DynamicRows` row for the attached datasource table
+- Store the raw submission record separately for audit/debugging
+- File uploads are recorded as metadata in the raw submission payload; binary file storage is still a future step.
+
+Update/edit behavior is not part of the first pass unless a future form includes an explicit row id and update mode.
+
+### 3) External action relay
+
+If `actionUrl` is configured, our server handler should process local handling first, then relay the payload.
+
+Planned metadata:
+
+```ts
+type FormRelay = {
+  actionUrl: string;
+  method: "post" | "get";
+};
+```
+
+Relay behavior:
+
+- Validate `actionUrl` before use
+- For `post`, forward normalized form data as a server-side request
+- For `get`, append normalized form data as query params
+- Record relay status with the submission
+- Browser still receives our success/failure response, not a direct third-party response
+
+### 4) Select datasource options
+
+A `select` field can attach to **one datasource** as its option source.
+
+Planned field-level metadata:
+
+```ts
+type SelectOptionSource = {
+  source: string;
+  tableId: string;
+  valueField: string;
+  labelField: string;
+  orderBy?: string;
+  orderDir?: "asc" | "desc";
+};
+```
+
+Render behavior:
+
+- If no datasource option source is configured, use the existing static `options` text
+- If a datasource option source is configured, render options from datasource rows
+- Option values come from `valueField`
+- Visible labels come from `labelField`
+
+### 5) Cascading datasource selects
+
+Cascading selects are handled as parent-child field dependencies. A child select filters its datasource options using the selected value from a parent select.
+
+Example:
+
+```text
+Country select -> State select -> City select
+```
+
+Planned metadata extends `SelectOptionSource`:
+
+```ts
+type SelectOptionSource = {
+  source: string;
+  tableId: string;
+  valueField: string;
+  labelField: string;
+  orderBy?: string;
+  orderDir?: "asc" | "desc";
+  cascade?: {
+    parentField: string;
+    parentValueColumn: string;
+  };
+};
+```
+
+Meaning:
+
+- `parentField` is the form field name to watch
+- `parentValueColumn` is the column in this select's datasource table that must match the parent selected value
+
+Runtime behavior:
+
+- Top-level datasource selects can be rendered server-side with initial options
+- Cascaded child selects render disabled until parent has a value
+- A small runtime script watches parent selects and fetches child options from a first-party endpoint
+- When a parent changes, all dependent child selects are cleared and reloaded
+- Cascades can chain across more than two levels by repeating the parent-child rule
+
+Planned endpoint:
+
+```text
+GET /api/forms/options?pageId=...&formId=...&fieldName=...&parentValue=...
+```
+
+The endpoint should resolve the published form metadata, validate that the requested field has an allowed datasource option source, apply the cascade filter, and return safe `{ value, label }` options.
 
 ---
 

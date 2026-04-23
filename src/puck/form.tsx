@@ -1,5 +1,4 @@
 import type { ReactNode } from "react";
-import { safeFormAction } from "@/lib/url";
 import {
   defaultFormProps,
   fieldClassName,
@@ -227,6 +226,7 @@ export function FormBlock({
   title,
   description,
   actionUrl,
+  relayMethod,
   fields,
   submitLabel,
   layout,
@@ -249,11 +249,13 @@ export function FormBlock({
 
   return (
     <form
-      action={safeFormAction(actionUrl)}
+      action="/api/forms/submit"
       className={formClassName(mergedProps)}
       method="post"
     >
       <input name="_formTitle" type="hidden" value={title} />
+      <input name="_pbRelayUrl" type="hidden" value={actionUrl || ""} />
+      <input name="_pbRelayMethod" type="hidden" value={relayMethod || "post"} />
       <div>
         <h2 className="pb-form__title">{title}</h2>
         {description ? (

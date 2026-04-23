@@ -14,7 +14,10 @@ export async function POST(
   }
 
   // Generate Razor CSHTML + C# renderer + datasource map from the Puck JSON
-  const bundle = buildTemplateBundle(body.data);
+  const bundle = buildTemplateBundle(body.data, {
+    pageId,
+    pageSlug: pageId,
+  });
 
   try {
     const page = await publishPage(pageId, body.data, bundle);

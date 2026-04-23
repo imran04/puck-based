@@ -2,6 +2,7 @@ import { Render, type Config, type RichtextField } from "@puckeditor/core";
 import type { CSSProperties, ReactNode } from "react";
 import { ConditionalRuleFieldRenderer } from "@/components/ConditionalRuleFieldRenderer";
 import { DsBindingsFieldRenderer } from "@/components/DsBindingsFieldRenderer";
+import { FormDataSinkFieldRenderer } from "@/components/FormDataSinkFieldRenderer";
 import { FormDesignerModalField } from "@/components/FormDesignerModalField";
 import { MergeTextField } from "@/components/MergeTextField";
 import { ReusableBlockPicker } from "@/components/ReusableBlockPicker";
@@ -14,7 +15,7 @@ import type {
 import type { ReusableBlock } from "@/lib/reusable-blocks";
 import { safeLinkUrl, safeMediaUrl } from "@/lib/url";
 import { FormBlock, type FormBlockProps } from "./form";
-import { defaultFormProps, type FormField } from "./form-schema";
+import { defaultFormProps, type FormDataSink, type FormField } from "./form-schema";
 import { mergeTags, renderMergeText } from "./merge-tags";
 
 type Slot = (props?: { className?: string }) => ReactNode;
@@ -299,17 +300,17 @@ function textLines(value: string) {
 
 // ── Datasource field helpers ───────────────────────────────────────────────
 
-function dataSourceManagerField() {
+function dataSourceManagerField(kind: "display" | "sink") {
   return {
     type: "custom" as const,
-    label: "Datasources",
+    label: kind === "display" ? "Display datasources" : "Sink datasources",
     render: ({
       value,
       onChange,
     }: {
       value?: DataSourceDefinition[];
       onChange: (v: DataSourceDefinition[]) => void;
-    }) => <DataSourceManager onChange={onChange} value={value} />,
+    }) => <DataSourceManager kind={kind} onChange={onChange} value={value} />,
   };
 }
 
@@ -347,6 +348,28 @@ function conditionalRuleField() {
       readOnly?: boolean;
     }) => (
       <ConditionalRuleFieldRenderer
+        onChange={onChange}
+        readOnly={readOnly}
+        value={value}
+      />
+    ),
+  };
+}
+
+function formDataSinkField() {
+  return {
+    type: "custom" as const,
+    label: "Datasource writeback",
+    render: ({
+      value,
+      onChange,
+      readOnly,
+    }: {
+      value?: FormDataSink;
+      onChange: (v: FormDataSink) => void;
+      readOnly?: boolean;
+    }) => (
+      <FormDataSinkFieldRenderer
         onChange={onChange}
         readOnly={readOnly}
         value={value}
@@ -435,11 +458,11 @@ export const puckConfig: Config = {
   root: {
     fields: {
       title: { type: "text", label: "Page title" },
-      dataSources: dataSourceManagerField(),
+      displaySources: dataSourceManagerField("display"),
     },
     defaultProps: {
       title: "Puck Studio Page",
-      dataSources: [],
+      displaySources: [],
     },
     render: ({ children }: { children?: ReactNode }) => (
       <main className="pb-page">{children}</main>
@@ -1701,7 +1724,16 @@ export const puckConfig: Config = {
       fields: {
         title: { type: "text", label: "Title" },
         description: { type: "textarea", label: "Description" },
-        actionUrl: { type: "text", label: "Action URL" },
+        actionUrl: { type: "text", label: "Relay URL" },
+        relayMethod: {
+          type: "radio",
+          label: "Relay method",
+          options: [
+            { label: "POST", value: "post" },
+            { label: "GET", value: "get" },
+          ],
+        },
+        dataSink: formDataSinkField(),
         layout: {
           type: "select",
           label: "Field layout",

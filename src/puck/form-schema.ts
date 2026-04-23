@@ -23,6 +23,29 @@ export type FormDensity = "compact" | "comfortable" | "spacious";
 export type FormSubmitAlign = "left" | "center" | "right";
 export type FormSubmitWidth = "auto" | "full";
 export type FormFieldWidth = "auto" | "full" | "half" | "third" | "twoThirds";
+export type FormRelayMethod = "post" | "get";
+
+export type FormDataSink = {
+  source: string;
+  tableId: string;
+  fieldMappings?: Array<{
+    formField: string;
+    tableColumn: string;
+  }>;
+};
+
+export type SelectOptionSource = {
+  source: string;
+  tableId: string;
+  valueField: string;
+  labelField: string;
+  orderBy?: string;
+  orderDir?: "asc" | "desc";
+  cascade?: {
+    parentField: string;
+    parentValueColumn: string;
+  };
+};
 
 export type FormField = {
   label: string;
@@ -35,12 +58,15 @@ export type FormField = {
   defaultValue?: string;
   width?: FormFieldWidth;
   rows?: number;
+  optionSource?: SelectOptionSource;
+  sinkColumn?: string;
 };
 
 export type FormBlockProps = {
   title: string;
   description?: string;
   actionUrl?: string;
+  relayMethod?: FormRelayMethod;
   submitLabel: string;
   successMessage?: string;
   layout?: FormLayout;
@@ -50,13 +76,15 @@ export type FormBlockProps = {
   density?: FormDensity;
   submitAlign?: FormSubmitAlign;
   submitWidth?: FormSubmitWidth;
+  dataSink?: FormDataSink;
   fields: FormField[];
 };
 
 export const defaultFormProps: Omit<FormBlockProps, "fields"> = {
   title: "Lead capture",
   description: "A Puck-native form block with first-party JSON and exportable markup.",
-  actionUrl: "/api/forms/submit",
+  actionUrl: "",
+  relayMethod: "post",
   submitLabel: "Send request",
   successMessage: "Thanks. We received your request.",
   layout: "two",

@@ -2,7 +2,8 @@
 
 import { usePuck } from "@puckeditor/core";
 import { DsBindingsEditor } from "@/components/DataSourcePanel";
-import type { DataSourceDefinition, DsBindings } from "@/lib/datasource-template";
+import { getDisplaySourcesFromRootProps } from "@/lib/datasource-roots";
+import type { DsBindings } from "@/lib/datasource-template";
 
 type DsBindingsFieldRendererProps = {
   bindableFields: string[];
@@ -17,7 +18,7 @@ export function DsBindingsFieldRenderer({
 }: DsBindingsFieldRendererProps) {
   const { appState } = usePuck();
   const rootProps = (appState.data.root as { props?: Record<string, unknown> }).props ?? {};
-  const dataSources = (rootProps.dataSources as DataSourceDefinition[]) ?? [];
+  const dataSources = getDisplaySourcesFromRootProps(rootProps as Record<string, unknown>);
 
   return (
     <DsBindingsEditor

@@ -1,12 +1,15 @@
 "use client";
 
+import { usePuck } from "@puckeditor/core";
 import { Copy, GripVertical, Plus, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { getDisplaySourcesFromRootProps } from "@/lib/datasource-roots";
 import {
   normalizeName,
   type FormField,
   type FormFieldType,
   type FormFieldWidth,
+  type SelectOptionSource,
 } from "@/puck/form-schema";
 
 type FormDesignerModalFieldProps = {
@@ -40,6 +43,31 @@ const widths: Array<{ label: string; value: FormFieldWidth }> = [
   { label: "Third", value: "third" },
   { label: "Two thirds", value: "twoThirds" },
 ];
+
+type TableMeta = {
+  id: string;
+  name: string;
+  displayName: string;
+  columns: Array<{ name: string; displayName: string }>;
+};
+
+const emptyOptionSource: SelectOptionSource = {
+  source: "",
+  tableId: "",
+  valueField: "",
+  labelField: "",
+};
+
+async function fetchTables(): Promise<TableMeta[]> {
+  try {
+    const res = await fetch("/api/tables", { cache: "no-store" });
+    if (!res.ok) return [];
+    const payload = (await res.json()) as { tables?: TableMeta[] };
+    return payload.tables ?? [];
+  } catch {
+    return [];
+  }
+}
 
 function createField(type: FormFieldType, index: number): FormField {
   const labelByType: Record<FormFieldType, string> = {
@@ -96,11 +124,41 @@ export function FormDesignerModalField({
   onChange,
   readOnly,
 }: FormDesignerModalFieldProps) {
+  const { appState, dispatch, selectedItem } = usePuck();
+  const rootProps = (appState.data.root as { props?: Record<string, unknown> }).props ?? {};
+  const dataSources = getDisplaySourcesFromRootProps(rootProps as Record<string, unknown>);
   const fields = useMemo(() => value || [], [value]);
+  const [tables, setTables] = useState<TableMeta[]>([]);
   const [open, setOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const selected = fields[selectedIndex] || fields[0];
   const selectedSafeIndex = fields[selectedIndex] ? selectedIndex : 0;
+  const selectedOptionSource = {
+    ...emptyOptionSource,
+    ...(selected?.optionSource ?? {}),
+  };
+  const selectedDs = dataSources.find((source) => source.name === selectedOptionSource.source);
+  const selectedTable = tables.find((table) => table.id === selectedOptionSource.tableId);
+  const selectedColumns = selectedTable?.columns ?? [];
+  const selectedFormProps =
+    selectedItem?.type === "FormBlock"
+      ? (selectedItem.props as Record<string, unknown>)
+      : null;
+  const selectedSink = (selectedFormProps?.dataSink ?? null) as
+    | { source?: string; tableId?: string }
+    | null;
+  const sinkTable = tables.find((table) => table.id === selectedSink?.tableId);
+  const sinkColumns = sinkTable?.columns ?? [];
+  const cascadeParentFields = fields.filter(
+    (field, index) =>
+      index !== selectedSafeIndex &&
+      field.type === "select" &&
+      Boolean(field.name),
+  );
+
+  useEffect(() => {
+    fetchTables().then(setTables);
+  }, []);
 
   function updateFields(nextFields: FormField[]) {
     onChange(nextFields);
@@ -123,6 +181,48 @@ export function FormDesignerModalField({
         fieldIndex === index ? { ...field, ...patch } : field,
       ),
     );
+  }
+
+  function updateOptionSource(patch: Partial<SelectOptionSource>) {
+    if (!selected) return;
+
+    const nextSource = {
+      ...selectedOptionSource,
+      ...patch,
+    };
+    const cleanedSource =
+      nextSource.source && nextSource.tableId && nextSource.valueField && nextSource.labelField
+        ? nextSource
+        : {
+            ...nextSource,
+            cascade:
+              nextSource.cascade?.parentField && nextSource.cascade?.parentValueColumn
+                ? nextSource.cascade
+                : undefined,
+          };
+
+    updateField(selectedSafeIndex, { optionSource: cleanedSource });
+  }
+
+  function clearOptionSource() {
+    updateField(selectedSafeIndex, { optionSource: undefined });
+  }
+
+  function handleOptionSourceChange(sourceName: string) {
+    const source = dataSources.find((item) => item.name === sourceName);
+    const table = tables.find((item) => item.id === source?.tableId);
+    const firstColumn = table?.columns[0]?.name ?? "";
+
+    updateField(selectedSafeIndex, {
+      optionSource: sourceName
+        ? {
+            source: sourceName,
+            tableId: source?.tableId ?? "",
+            valueField: firstColumn,
+            labelField: table?.columns[1]?.name ?? firstColumn,
+          }
+        : undefined,
+    });
   }
 
   function moveField(index: number, direction: -1 | 1) {
@@ -156,6 +256,20 @@ export function FormDesignerModalField({
     updateFields(nextFields);
   }
 
+  function openDataSourceSettings(closeModal = false) {
+    dispatch({
+      type: "setUi",
+      ui: {
+        itemSelector: null,
+        rightSideBarVisible: true,
+      },
+    });
+
+    if (closeModal) {
+      setOpen(false);
+    }
+  }
+
   return (
     <div className="form-designer-field">
       <div className="form-designer-field__summary">
@@ -171,6 +285,14 @@ export function FormDesignerModalField({
           Open form designer
         </button>
       </div>
+      {dataSources.length === 0 ? (
+        <div className="form-designer-field__notice">
+          <p>No display datasource configured yet.</p>
+          <button onClick={() => openDataSourceSettings(false)} type="button">
+            Configure datasource
+          </button>
+        </div>
+      ) : null}
 
       {open ? (
         <div className="form-modal" role="dialog" aria-modal="true" aria-label="Form designer">
@@ -299,6 +421,37 @@ export function FormDesignerModalField({
                         />
                       </label>
                     ) : null}
+                    {!isLayoutOnlyField(selected.type) ? (
+                      <label>
+                        Sink column
+                        {sinkColumns.length > 0 ? (
+                          <select
+                            value={selected.sinkColumn || ""}
+                            onChange={(event) =>
+                              updateField(selectedSafeIndex, { sinkColumn: event.target.value })
+                            }
+                          >
+                            <option value="">Auto map by field name</option>
+                            {sinkColumns.map((column) => (
+                              <option key={column.name} value={column.name}>
+                                {column.displayName || column.name}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            placeholder="Auto map by field name"
+                            value={selected.sinkColumn || ""}
+                            onChange={(event) =>
+                              updateField(selectedSafeIndex, { sinkColumn: event.target.value })
+                            }
+                          />
+                        )}
+                        <small>
+                          Field-level sink mapping. Configure the sink datasource in form settings.
+                        </small>
+                      </label>
+                    ) : null}
 
                     <label>
                       Width
@@ -378,6 +531,136 @@ export function FormDesignerModalField({
                           }
                         />
                       </label>
+                    ) : null}
+
+                    {selected.type === "select" ? (
+                      <div className="form-modal__datasource">
+                        <div>
+                          <p>Datasource options</p>
+                          <small>Optional. Static options remain as fallback.</small>
+                        </div>
+                        {dataSources.length === 0 ? (
+                          <div className="form-modal__datasource-empty">
+                            <p>Add a display datasource to enable dynamic select options.</p>
+                            <button onClick={() => openDataSourceSettings(true)} type="button">
+                              Configure datasource
+                            </button>
+                          </div>
+                        ) : null}
+                        <label>
+                          Source
+                          <select
+                            disabled={dataSources.length === 0}
+                            value={selectedOptionSource.source}
+                            onChange={(event) => handleOptionSourceChange(event.target.value)}
+                          >
+                            <option value="">Static options</option>
+                            {dataSources.map((source) => (
+                              <option key={source.id} value={source.name}>
+                                {source.name} ({source.tableName || source.queryType})
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        {selectedOptionSource.source ? (
+                          <>
+                            <div className="form-modal__two">
+                              <label>
+                                Value field
+                                <select
+                                  value={selectedOptionSource.valueField}
+                                  onChange={(event) =>
+                                    updateOptionSource({ valueField: event.target.value })
+                                  }
+                                >
+                                  <option value="">Choose field</option>
+                                  {selectedColumns.map((column) => (
+                                    <option key={column.name} value={column.name}>
+                                      {column.displayName || column.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <label>
+                                Label field
+                                <select
+                                  value={selectedOptionSource.labelField}
+                                  onChange={(event) =>
+                                    updateOptionSource({ labelField: event.target.value })
+                                  }
+                                >
+                                  <option value="">Choose field</option>
+                                  {selectedColumns.map((column) => (
+                                    <option key={column.name} value={column.name}>
+                                      {column.displayName || column.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            </div>
+
+                            <div className="form-modal__two">
+                              <label>
+                                Parent select
+                                <select
+                                  value={selectedOptionSource.cascade?.parentField || ""}
+                                  onChange={(event) =>
+                                    updateOptionSource({
+                                      cascade: event.target.value
+                                        ? {
+                                            parentField: event.target.value,
+                                            parentValueColumn:
+                                              selectedOptionSource.cascade?.parentValueColumn || "",
+                                          }
+                                        : undefined,
+                                    })
+                                  }
+                                >
+                                  <option value="">No cascade</option>
+                                  {cascadeParentFields.map((field) => (
+                                    <option key={field.name} value={field.name}>
+                                      {field.label || field.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <label>
+                                Match column
+                                <select
+                                  value={selectedOptionSource.cascade?.parentValueColumn || ""}
+                                  onChange={(event) =>
+                                    updateOptionSource({
+                                      cascade: selectedOptionSource.cascade?.parentField
+                                        ? {
+                                            parentField: selectedOptionSource.cascade.parentField,
+                                            parentValueColumn: event.target.value,
+                                          }
+                                        : undefined,
+                                    })
+                                  }
+                                >
+                                  <option value="">Choose field</option>
+                                  {selectedColumns.map((column) => (
+                                    <option key={column.name} value={column.name}>
+                                      {column.displayName || column.name}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                            </div>
+
+                            {selectedDs ? (
+                              <p>
+                                Options load from {selectedDs.tableName || selectedDs.name}.
+                              </p>
+                            ) : null}
+                            <button onClick={clearOptionSource} type="button">
+                              Use static options
+                            </button>
+                          </>
+                        ) : null}
+                      </div>
                     ) : null}
 
                     {!isLayoutOnlyField(selected.type) ? (

@@ -39,12 +39,21 @@ function normalizeData(data: Data): Data {
     zones?: Record<string, unknown>;
   };
   const root = (normalized.root ?? {}) as { props?: Record<string, unknown> };
+  const rootProps = {
+    ...(root.props ?? {}),
+  } as Record<string, unknown>;
+  const legacySources = Array.isArray(rootProps.dataSources)
+    ? rootProps.dataSources
+    : [];
+  const hasDisplaySources = Object.prototype.hasOwnProperty.call(rootProps, "displaySources");
+
+  if (!hasDisplaySources) {
+    rootProps.displaySources = legacySources;
+  }
 
   normalized.root = {
     ...root,
-    props: {
-      ...(root.props ?? {}),
-    },
+    props: rootProps,
   };
 
   if (!Array.isArray(normalized.content)) {
@@ -104,7 +113,7 @@ function normalizePageId(value: string) {
 
 function createInitialPage(pageId: string): StoredPage {
   const now = new Date().toISOString();
-  const draft = cloneInitialData();
+  const draft = normalizeData(cloneInitialData());
 
   return {
     id: pageId,
@@ -240,6 +249,7 @@ export async function createPage(title: string) {
     ...page.draft,
     root: {
       props: {
+        ...((page.draft.root as { props?: Record<string, unknown> })?.props ?? {}),
         title: page.title,
       },
     },

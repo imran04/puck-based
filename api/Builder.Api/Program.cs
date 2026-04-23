@@ -1,3 +1,5 @@
+using System.Net;
+using System.Text;
 using System.Text.Json;
 using Builder.Api.Data;
 using Builder.Api.Models;
@@ -20,6 +22,7 @@ builder.Services.AddDbContext<BuilderDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("BuilderDb")));
 
 builder.Services.AddSingleton<RazorCompiler>();
+builder.Services.AddHttpClient();
 
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
@@ -106,6 +109,21 @@ using (var scope = app.Services.CreateScope())
             );
             CREATE INDEX IX_DynRelRows_RelationId_FromRowId ON DynamicRelationRows (RelationId, FromRowId);
             CREATE INDEX IX_DynRelRows_RelationId_ToRowId ON DynamicRelationRows (RelationId, ToRowId);
+        END
+        """);
+
+    await db.Database.ExecuteSqlRawAsync("""
+        IF NOT EXISTS (
+            SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_NAME = 'FormSubmissions' AND COLUMN_NAME = 'PageId'
+        )
+        BEGIN
+            ALTER TABLE FormSubmissions ADD PageId nvarchar(128) NULL;
+            ALTER TABLE FormSubmissions ADD PageSlug nvarchar(256) NULL;
+            ALTER TABLE FormSubmissions ADD FormId nvarchar(128) NULL;
+            ALTER TABLE FormSubmissions ADD DynamicRowId uniqueidentifier NULL;
+            ALTER TABLE FormSubmissions ADD RelayStatus nvarchar(64) NULL;
+            ALTER TABLE FormSubmissions ADD RelayStatusCode int NULL;
         END
         """);
 }
@@ -266,6 +284,118 @@ app.MapPost("/api/form-submissions", async (SaveFormSubmissionRequest request, B
         submission.FormTitle,
         submission.CreatedAt,
     });
+});
+
+app.MapPost("/api/forms/runtime-submit", async (
+    HttpRequest request,
+    BuilderDbContext db,
+    IHttpClientFactory httpClientFactory) =>
+{
+    if (!request.HasFormContentType)
+        return Results.BadRequest(new { error = "Expected form data" });
+
+    var (fields, files, form) = await ReadSubmittedForm(request);
+    var pageId = FormValue(form, "_pbPageId");
+    var pageSlug = FormValue(form, "_pbPageSlug");
+    var formId = FormValue(form, "_pbFormId");
+    var formTitle = FormValue(form, "_pbFormTitle");
+
+    if (string.IsNullOrWhiteSpace(pageId) && string.IsNullOrWhiteSpace(pageSlug))
+        return Results.BadRequest(new { error = "Missing page identifier" });
+    if (string.IsNullOrWhiteSpace(formId))
+        return Results.BadRequest(new { error = "Missing form identifier" });
+
+    var page = await db.Pages
+        .AsNoTracking()
+        .FirstOrDefaultAsync(p => p.Id == pageId || p.Slug == pageId || p.Slug == pageSlug);
+    if (page is null)
+        return Results.NotFound(new { error = "Page not found" });
+
+    var pageJson = string.IsNullOrWhiteSpace(page.PublishedJson) ? page.DraftJson : page.PublishedJson;
+    using var doc = JsonDocument.Parse(pageJson);
+    if (!TryFindFormProps(doc.RootElement, formId, formTitle, out var formProps))
+        return Results.BadRequest(new { error = "Form definition not found on this page" });
+
+    var resolvedTitle = string.IsNullOrWhiteSpace(formTitle)
+        ? GetString(formProps, "title", "Form")
+        : formTitle;
+    var dynamicRowId = await InsertFormDataSinkRow(formProps, fields, db);
+    var relay = await RelayFormAsync(formProps, page, formId, fields, httpClientFactory, request);
+
+    var payload = new
+    {
+        identifiers = new
+        {
+            pageId = page.Id,
+            pageSlug = page.Slug,
+            formId,
+            formTitle = resolvedTitle,
+        },
+        fields,
+        files,
+        dataSink = new
+        {
+            dynamicRowId,
+        },
+        relay = new
+        {
+            status = relay.Status,
+            statusCode = relay.StatusCode,
+        },
+    };
+
+    var submission = new FormSubmission
+    {
+        Id = Guid.NewGuid(),
+        PageId = page.Id,
+        PageSlug = page.Slug,
+        FormId = formId,
+        FormTitle = resolvedTitle,
+        PayloadJson = JsonSerializer.Serialize(payload, JsonOptions()),
+        DynamicRowId = dynamicRowId,
+        RelayStatus = relay.Status,
+        RelayStatusCode = relay.StatusCode,
+        CreatedAt = DateTimeOffset.UtcNow,
+    };
+    db.FormSubmissions.Add(submission);
+    await db.SaveChangesAsync();
+
+    var message = GetString(formProps, "successMessage", "Thanks. Your form submission was received.");
+    var html = $"<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>{WebUtility.HtmlEncode(resolvedTitle)}</title></head><body><main style=\"font-family:system-ui,sans-serif;max-width:680px;margin:12vh auto;padding:24px;\"><h1>{WebUtility.HtmlEncode(message)}</h1><p>Your response was saved.</p></main></body></html>";
+    return Results.Content(html, "text/html; charset=utf-8");
+});
+
+app.MapGet("/api/forms/options", async (
+    string pageId,
+    string formId,
+    string fieldName,
+    string? parentValue,
+    BuilderDbContext db) =>
+{
+    if (string.IsNullOrWhiteSpace(pageId) ||
+        string.IsNullOrWhiteSpace(formId) ||
+        string.IsNullOrWhiteSpace(fieldName))
+    {
+        return Results.BadRequest(new { error = "pageId, formId, and fieldName are required" });
+    }
+
+    var page = await db.Pages
+        .AsNoTracking()
+        .FirstOrDefaultAsync(p => p.Id == pageId || p.Slug == pageId);
+    if (page is null)
+        return Results.NotFound(new { error = "Page not found" });
+
+    var pageJson = string.IsNullOrWhiteSpace(page.PublishedJson) ? page.DraftJson : page.PublishedJson;
+    using var doc = JsonDocument.Parse(pageJson);
+    if (!TryFindFormProps(doc.RootElement, formId, "", out var formProps) ||
+        !TryFindFormField(formProps, fieldName, out var field) ||
+        !TryGetOptionSource(field, out var optionSource))
+    {
+        return Results.Ok(new { options = Array.Empty<object>() });
+    }
+
+    var options = await BuildSelectOptions(doc.RootElement, optionSource, parentValue, db);
+    return Results.Ok(new { options });
 });
 
 // ── Dynamic Tables ─────────────────────────────────────────────────────────
@@ -659,8 +789,7 @@ static async Task<IReadOnlyDictionary<string, object?>> ResolveDataSources(
     try { doc = JsonDocument.Parse(dataSourceMapJson); }
     catch { return result; }
 
-    if (!doc.RootElement.TryGetProperty("dataSources", out var dsArray) ||
-        dsArray.ValueKind != JsonValueKind.Array)
+    if (!TryGetDisplaySourceArrayFromMap(doc.RootElement, out var dsArray))
         return result;
 
     foreach (var ds in dsArray.EnumerateArray())
@@ -722,7 +851,7 @@ static async Task<IReadOnlyDictionary<string, object?>> ResolveDataSources(
         else
         {
             result[name] = allRows.Take(limit)
-                .Select(r => (object?)JsonRowToDictionary(r.DataJson))
+                .Select(r => JsonRowToDictionary(r.DataJson))
                 .ToList();
         }
     }
@@ -750,4 +879,695 @@ static IReadOnlyDictionary<string, object?> JsonRowToDictionary(string json)
     }
     catch { /* malformed JSON row — return empty dict */ }
     return dict;
+}
+
+static JsonSerializerOptions JsonOptions() => new(JsonSerializerDefaults.Web);
+
+static async Task<(
+    Dictionary<string, object?> Fields,
+    List<Dictionary<string, object?>> Files,
+    IFormCollection Form)> ReadSubmittedForm(HttpRequest request)
+{
+    var form = await request.ReadFormAsync();
+    var fields = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+
+    foreach (var item in form)
+    {
+        if (item.Key.StartsWith("_pb", StringComparison.OrdinalIgnoreCase) ||
+            item.Key.Equals("_formTitle", StringComparison.OrdinalIgnoreCase))
+        {
+            continue;
+        }
+
+        var key = NormalizeSubmittedFieldName(item.Key);
+        fields[key] = item.Value.Count switch
+        {
+            0 => "",
+            1 => item.Value[0] ?? "",
+            _ => item.Value.ToArray(),
+        };
+    }
+
+    var files = new List<Dictionary<string, object?>>();
+    foreach (var file in form.Files)
+    {
+        files.Add(new Dictionary<string, object?>
+        {
+            ["fieldName"] = NormalizeSubmittedFieldName(file.Name),
+            ["fileName"] = file.FileName,
+            ["contentType"] = file.ContentType,
+            ["length"] = file.Length,
+        });
+
+        var key = NormalizeSubmittedFieldName(file.Name);
+        if (!fields.ContainsKey(key))
+            fields[key] = file.FileName;
+    }
+
+    return (fields, files, form);
+}
+
+static string NormalizeSubmittedFieldName(string value) =>
+    value.EndsWith("[]", StringComparison.Ordinal) ? value[..^2] : value;
+
+static string FormValue(IFormCollection form, string key) =>
+    form.TryGetValue(key, out var value) ? value.ToString() : "";
+
+static string GetString(JsonElement element, string propertyName, string fallback = "")
+{
+    if (element.ValueKind != JsonValueKind.Object ||
+        !element.TryGetProperty(propertyName, out var value))
+    {
+        return fallback;
+    }
+
+    return value.ValueKind switch
+    {
+        JsonValueKind.String => value.GetString() ?? fallback,
+        JsonValueKind.Number => value.GetRawText(),
+        JsonValueKind.True => "true",
+        JsonValueKind.False => "false",
+        _ => fallback,
+    };
+}
+
+static int GetInt(JsonElement element, string propertyName, int fallback)
+{
+    if (element.ValueKind == JsonValueKind.Object &&
+        element.TryGetProperty(propertyName, out var value) &&
+        value.TryGetInt32(out var parsed))
+    {
+        return parsed;
+    }
+
+    return fallback;
+}
+
+static string NormalizeName(string value, string fallback)
+{
+    var sb = new StringBuilder();
+    var lastWasSeparator = false;
+
+    foreach (var ch in value.Trim().ToLowerInvariant())
+    {
+        if (char.IsLetterOrDigit(ch))
+        {
+            sb.Append(ch);
+            lastWasSeparator = false;
+        }
+        else if (!lastWasSeparator)
+        {
+            sb.Append('_');
+            lastWasSeparator = true;
+        }
+    }
+
+    var normalized = sb.ToString().Trim('_');
+    return string.IsNullOrWhiteSpace(normalized) ? fallback : normalized;
+}
+
+static string FormDefinitionId(JsonElement props)
+{
+    var explicitId = GetString(props, "formId");
+    if (string.IsNullOrWhiteSpace(explicitId))
+        explicitId = GetString(props, "id");
+    if (string.IsNullOrWhiteSpace(explicitId))
+        explicitId = GetString(props, "title", "form");
+
+    return NormalizeName(explicitId, "form");
+}
+
+static bool TryFindFormProps(
+    JsonElement node,
+    string formId,
+    string formTitle,
+    out JsonElement props)
+{
+    props = default;
+
+    if (node.ValueKind == JsonValueKind.Object)
+    {
+        if (GetString(node, "type") == "FormBlock" &&
+            node.TryGetProperty("props", out var candidateProps))
+        {
+            var normalizedWanted = NormalizeName(formId, "form");
+            var normalizedCandidate = FormDefinitionId(candidateProps);
+            var candidateTitle = GetString(candidateProps, "title");
+
+            if (normalizedCandidate.Equals(normalizedWanted, StringComparison.OrdinalIgnoreCase) ||
+                (!string.IsNullOrWhiteSpace(formTitle) &&
+                 candidateTitle.Equals(formTitle, StringComparison.OrdinalIgnoreCase)))
+            {
+                props = candidateProps;
+                return true;
+            }
+        }
+
+        foreach (var property in node.EnumerateObject())
+        {
+            if (TryFindFormProps(property.Value, formId, formTitle, out props))
+                return true;
+        }
+    }
+
+    if (node.ValueKind == JsonValueKind.Array)
+    {
+        foreach (var item in node.EnumerateArray())
+        {
+            if (TryFindFormProps(item, formId, formTitle, out props))
+                return true;
+        }
+    }
+
+    return false;
+}
+
+static bool TryFindFormField(JsonElement formProps, string fieldName, out JsonElement field)
+{
+    field = default;
+
+    if (!formProps.TryGetProperty("fields", out var fields) ||
+        fields.ValueKind != JsonValueKind.Array)
+    {
+        return false;
+    }
+
+    var wanted = NormalizeName(fieldName, "field");
+    var index = 0;
+    foreach (var candidate in fields.EnumerateArray())
+    {
+        var name = GetString(candidate, "name");
+        if (string.IsNullOrWhiteSpace(name))
+            name = GetString(candidate, "label");
+
+        var normalized = NormalizeName(name, $"field_{index + 1}");
+        if (normalized.Equals(wanted, StringComparison.OrdinalIgnoreCase))
+        {
+            field = candidate;
+            return true;
+        }
+
+        index++;
+    }
+
+    return false;
+}
+
+static bool TryGetOptionSource(JsonElement field, out JsonElement optionSource)
+{
+    optionSource = default;
+
+    if (field.TryGetProperty("optionSource", out var source) &&
+        source.ValueKind == JsonValueKind.Object &&
+        !string.IsNullOrWhiteSpace(GetString(source, "source")) &&
+        !string.IsNullOrWhiteSpace(GetString(source, "tableId")) &&
+        !string.IsNullOrWhiteSpace(GetString(source, "valueField")) &&
+        !string.IsNullOrWhiteSpace(GetString(source, "labelField")))
+    {
+        optionSource = source;
+        return true;
+    }
+
+    return false;
+}
+
+static bool TryGetDataSink(JsonElement formProps, out JsonElement sink)
+{
+    sink = default;
+
+    if (formProps.TryGetProperty("dataSink", out var dataSink) &&
+        dataSink.ValueKind == JsonValueKind.Object &&
+        !string.IsNullOrWhiteSpace(GetString(dataSink, "tableId")))
+    {
+        sink = dataSink;
+        return true;
+    }
+
+    return false;
+}
+
+static async Task<Guid?> InsertFormDataSinkRow(
+    JsonElement formProps,
+    Dictionary<string, object?> fields,
+    BuilderDbContext db)
+{
+    if (!TryGetDataSink(formProps, out var sink) ||
+        !Guid.TryParse(GetString(sink, "tableId"), out var tableId))
+    {
+        return null;
+    }
+
+    var table = await db.TableDefinitions.AsNoTracking().FirstOrDefaultAsync(t => t.Id == tableId);
+    if (table is null)
+        return null;
+
+    var columns = ReadColumnNames(table.ColumnsJson);
+    var rowData = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+
+    foreach (var mapping in ReadSinkMappings(formProps, sink))
+    {
+        if (!ColumnAllowed(columns, mapping.TableColumn))
+            continue;
+
+        if (fields.TryGetValue(mapping.FormField, out var value))
+            rowData[mapping.TableColumn] = value;
+    }
+
+    foreach (var column in columns)
+    {
+        if (!rowData.ContainsKey(column) && fields.TryGetValue(column, out var value))
+            rowData[column] = value;
+    }
+
+    // Always keep a full submission snapshot in the dynamic row JSON.
+    rowData["_pbSubmission"] = fields;
+    rowData["_pbCapturedAt"] = DateTimeOffset.UtcNow.ToString("O");
+    rowData["_pbSinkSource"] = GetString(sink, "source", tableId.ToString());
+
+    var now = DateTimeOffset.UtcNow;
+    var row = new DynamicRow
+    {
+        Id = Guid.NewGuid(),
+        TableId = tableId,
+        DataJson = JsonSerializer.Serialize(rowData, JsonOptions()),
+        CreatedAt = now,
+        UpdatedAt = now,
+    };
+
+    db.DynamicRows.Add(row);
+    await db.SaveChangesAsync();
+    return row.Id;
+}
+
+static bool ColumnAllowed(HashSet<string> columns, string column) =>
+    columns.Count == 0 || columns.Contains(column);
+
+static IEnumerable<(string FormField, string TableColumn)> ReadSinkMappings(
+    JsonElement formProps,
+    JsonElement sink)
+{
+    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    foreach (var mapping in ReadFieldLevelSinkMappings(formProps))
+    {
+        var key = $"{mapping.FormField}\u001f{mapping.TableColumn}";
+        if (seen.Add(key))
+            yield return mapping;
+    }
+
+    foreach (var mapping in ReadLegacyFieldMappings(sink))
+    {
+        var key = $"{mapping.FormField}\u001f{mapping.TableColumn}";
+        if (seen.Add(key))
+            yield return mapping;
+    }
+}
+
+static IEnumerable<(string FormField, string TableColumn)> ReadFieldLevelSinkMappings(
+    JsonElement formProps)
+{
+    if (!formProps.TryGetProperty("fields", out var fieldsArray) ||
+        fieldsArray.ValueKind != JsonValueKind.Array)
+    {
+        yield break;
+    }
+
+    var index = 0;
+    foreach (var field in fieldsArray.EnumerateArray())
+    {
+        var fieldType = GetString(field, "type");
+        if (IsLayoutOnlyFieldType(fieldType))
+        {
+            index++;
+            continue;
+        }
+
+        var sinkColumn = GetString(field, "sinkColumn");
+        if (string.IsNullOrWhiteSpace(sinkColumn))
+        {
+            index++;
+            continue;
+        }
+
+        var rawName = GetString(field, "name");
+        if (string.IsNullOrWhiteSpace(rawName))
+            rawName = GetString(field, "label");
+
+        var formField = NormalizeName(rawName, $"field_{index + 1}");
+        if (!string.IsNullOrWhiteSpace(formField))
+            yield return (formField, sinkColumn);
+
+        index++;
+    }
+}
+
+static bool IsLayoutOnlyFieldType(string fieldType) =>
+    fieldType.Equals("heading", StringComparison.OrdinalIgnoreCase) ||
+    fieldType.Equals("paragraph", StringComparison.OrdinalIgnoreCase) ||
+    fieldType.Equals("divider", StringComparison.OrdinalIgnoreCase);
+
+static IEnumerable<(string FormField, string TableColumn)> ReadLegacyFieldMappings(JsonElement sink)
+{
+    if (!sink.TryGetProperty("fieldMappings", out var mappings) ||
+        mappings.ValueKind != JsonValueKind.Array)
+    {
+        yield break;
+    }
+
+    foreach (var mapping in mappings.EnumerateArray())
+    {
+        var formField = NormalizeName(GetString(mapping, "formField"), "");
+        var tableColumn = GetString(mapping, "tableColumn");
+
+        if (!string.IsNullOrWhiteSpace(formField) &&
+            !string.IsNullOrWhiteSpace(tableColumn))
+        {
+            yield return (formField, tableColumn);
+        }
+    }
+}
+
+static HashSet<string> ReadColumnNames(string columnsJson)
+{
+    var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    try
+    {
+        using var doc = JsonDocument.Parse(columnsJson);
+        if (doc.RootElement.ValueKind != JsonValueKind.Array)
+            return columns;
+
+        foreach (var column in doc.RootElement.EnumerateArray())
+        {
+            var name = column.ValueKind == JsonValueKind.String
+                ? column.GetString() ?? ""
+                : GetString(column, "name");
+            if (!string.IsNullOrWhiteSpace(name))
+                columns.Add(name);
+        }
+    }
+    catch
+    {
+        return columns;
+    }
+
+    return columns;
+}
+
+static async Task<(string? Status, int? StatusCode)> RelayFormAsync(
+    JsonElement formProps,
+    Page page,
+    string formId,
+    Dictionary<string, object?> fields,
+    IHttpClientFactory httpClientFactory,
+    HttpRequest request)
+{
+    var actionUrl = GetString(formProps, "actionUrl");
+    if (string.IsNullOrWhiteSpace(actionUrl))
+        return (null, null);
+
+    Uri uri;
+    if (Uri.TryCreate(actionUrl, UriKind.Absolute, out var absoluteUri))
+    {
+        if (absoluteUri.Scheme != Uri.UriSchemeHttp && absoluteUri.Scheme != Uri.UriSchemeHttps)
+            return ("invalid-url", null);
+
+        uri = absoluteUri;
+    }
+    else if (actionUrl.StartsWith("/", StringComparison.Ordinal))
+    {
+        uri = new Uri(new Uri($"{request.Scheme}://{request.Host}"), actionUrl);
+    }
+    else
+    {
+        return ("invalid-url", null);
+    }
+
+    if (uri.AbsolutePath.Equals("/api/forms/runtime-submit", StringComparison.OrdinalIgnoreCase))
+        return ("skipped-loop", null);
+
+    var relayFields = FlattenRelayFields(fields);
+    relayFields.Add(new KeyValuePair<string, string>("_pbPageId", page.Id));
+    relayFields.Add(new KeyValuePair<string, string>("_pbPageSlug", page.Slug));
+    relayFields.Add(new KeyValuePair<string, string>("_pbFormId", formId));
+
+    try
+    {
+        var client = httpClientFactory.CreateClient();
+        client.Timeout = TimeSpan.FromSeconds(10);
+        var method = GetString(formProps, "relayMethod", "post");
+        HttpResponseMessage response;
+
+        if (method.Equals("get", StringComparison.OrdinalIgnoreCase))
+        {
+            response = await client.GetAsync(AppendQuery(uri, relayFields));
+        }
+        else
+        {
+            response = await client.PostAsync(uri, new FormUrlEncodedContent(relayFields));
+        }
+
+        return (response.IsSuccessStatusCode ? "success" : "http-error", (int)response.StatusCode);
+    }
+    catch
+    {
+        return ("failed", null);
+    }
+}
+
+static List<KeyValuePair<string, string>> FlattenRelayFields(Dictionary<string, object?> fields)
+{
+    var output = new List<KeyValuePair<string, string>>();
+
+    foreach (var (key, value) in fields)
+    {
+        switch (value)
+        {
+            case string[] many:
+                output.AddRange(many.Select(item => new KeyValuePair<string, string>(key, item)));
+                break;
+            case IEnumerable<string> many:
+                output.AddRange(many.Select(item => new KeyValuePair<string, string>(key, item)));
+                break;
+            case null:
+                output.Add(new KeyValuePair<string, string>(key, ""));
+                break;
+            default:
+                output.Add(new KeyValuePair<string, string>(key, value.ToString() ?? ""));
+                break;
+        }
+    }
+
+    return output;
+}
+
+static Uri AppendQuery(Uri uri, IEnumerable<KeyValuePair<string, string>> fields)
+{
+    var builder = new UriBuilder(uri);
+    var existing = builder.Query.TrimStart('?');
+    var next = string.Join("&", fields.Select(pair =>
+        $"{WebUtility.UrlEncode(pair.Key)}={WebUtility.UrlEncode(pair.Value)}"));
+
+    builder.Query = string.IsNullOrWhiteSpace(existing)
+        ? next
+        : $"{existing}&{next}";
+
+    return builder.Uri;
+}
+
+static async Task<List<Dictionary<string, string>>> BuildSelectOptions(
+    JsonElement pageData,
+    JsonElement optionSource,
+    string? parentValue,
+    BuilderDbContext db)
+{
+    var sourceName = GetString(optionSource, "source");
+    var fallbackTableId = GetString(optionSource, "tableId");
+    var valueField = GetString(optionSource, "valueField");
+    var labelField = GetString(optionSource, "labelField", valueField);
+    var rows = await ResolveOptionRows(pageData, sourceName, fallbackTableId, db);
+
+    if (optionSource.TryGetProperty("cascade", out var cascade) &&
+        cascade.ValueKind == JsonValueKind.Object)
+    {
+        var parentColumn = GetString(cascade, "parentValueColumn");
+        if (!string.IsNullOrWhiteSpace(parentColumn))
+        {
+            if (string.IsNullOrWhiteSpace(parentValue))
+                return [];
+
+            rows = rows
+                .Where(row => DictValue(row, parentColumn).Equals(parentValue, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
+    }
+
+    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    var options = new List<Dictionary<string, string>>();
+    foreach (var row in rows)
+    {
+        var value = DictValue(row, valueField);
+        if (string.IsNullOrWhiteSpace(value))
+            continue;
+
+        var label = DictValue(row, labelField);
+        if (string.IsNullOrWhiteSpace(label))
+            label = value;
+
+        var key = $"{value}\u001f{label}";
+        if (!seen.Add(key))
+            continue;
+
+        options.Add(new Dictionary<string, string>
+        {
+            ["value"] = value,
+            ["label"] = label,
+        });
+    }
+
+    return options;
+}
+
+static async Task<List<IReadOnlyDictionary<string, object?>>> ResolveOptionRows(
+    JsonElement pageData,
+    string sourceName,
+    string fallbackTableId,
+    BuilderDbContext db)
+{
+    JsonElement? dataSource = TryFindDataSource(pageData, sourceName, out var found)
+        ? found
+        : null;
+
+    var tableIdText = dataSource.HasValue
+        ? GetString(dataSource.Value, "tableId", fallbackTableId)
+        : fallbackTableId;
+    if (!Guid.TryParse(tableIdText, out var tableId))
+        return [];
+
+    var orderDir = dataSource.HasValue ? GetString(dataSource.Value, "orderDir", "asc") : "asc";
+    var limit = dataSource.HasValue ? GetInt(dataSource.Value, "limit", 500) : 500;
+    limit = Math.Clamp(limit <= 0 ? 500 : limit, 1, 1000);
+
+    var query = db.DynamicRows.AsNoTracking().Where(r => r.TableId == tableId);
+    var rows = await (orderDir.Equals("desc", StringComparison.OrdinalIgnoreCase)
+        ? query.OrderByDescending(r => r.CreatedAt)
+        : query.OrderBy(r => r.CreatedAt)).ToListAsync();
+
+    if (dataSource.HasValue &&
+        dataSource.Value.TryGetProperty("filters", out var filters) &&
+        filters.ValueKind == JsonValueKind.Array)
+    {
+        rows = ApplyDataSourceFilters(rows, filters);
+    }
+
+    return rows
+        .Take(limit)
+        .Select(row => JsonRowToDictionary(row.DataJson))
+        .ToList();
+}
+
+static bool TryGetDisplaySourceArrayFromMap(JsonElement mapRoot, out JsonElement sources)
+{
+    sources = default;
+
+    if (mapRoot.TryGetProperty("displaySources", out sources) &&
+        sources.ValueKind == JsonValueKind.Array)
+    {
+        return true;
+    }
+
+    if (mapRoot.TryGetProperty("dataSources", out sources) &&
+        sources.ValueKind == JsonValueKind.Array)
+    {
+        return true;
+    }
+
+    return false;
+}
+
+static bool TryGetDisplaySourceArrayFromPage(JsonElement pageData, out JsonElement sources)
+{
+    sources = default;
+
+    if (!pageData.TryGetProperty("root", out var root) ||
+        !root.TryGetProperty("props", out var props) ||
+        props.ValueKind != JsonValueKind.Object)
+    {
+        return false;
+    }
+
+    if (props.TryGetProperty("displaySources", out sources) &&
+        sources.ValueKind == JsonValueKind.Array)
+    {
+        return true;
+    }
+
+    if (props.TryGetProperty("dataSources", out sources) &&
+        sources.ValueKind == JsonValueKind.Array)
+    {
+        return true;
+    }
+
+    return false;
+}
+
+static bool TryFindDataSource(JsonElement pageData, string sourceName, out JsonElement dataSource)
+{
+    dataSource = default;
+
+    if (string.IsNullOrWhiteSpace(sourceName) ||
+        !TryGetDisplaySourceArrayFromPage(pageData, out var dataSources))
+    {
+        return false;
+    }
+
+    foreach (var candidate in dataSources.EnumerateArray())
+    {
+        if (GetString(candidate, "name").Equals(sourceName, StringComparison.OrdinalIgnoreCase))
+        {
+            dataSource = candidate;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static List<DynamicRow> ApplyDataSourceFilters(List<DynamicRow> rows, JsonElement filters)
+{
+    foreach (var filter in filters.EnumerateArray())
+    {
+        var field = GetString(filter, "field");
+        var op = GetString(filter, "op", "eq");
+        var value = GetString(filter, "value");
+        if (string.IsNullOrWhiteSpace(field))
+            continue;
+
+        rows = rows.Where(row =>
+        {
+            var rowData = JsonRowToDictionary(row.DataJson);
+            var actual = DictValue(rowData, field);
+
+            return op switch
+            {
+                "contains" => actual.Contains(value, StringComparison.OrdinalIgnoreCase),
+                "neq" => !actual.Equals(value, StringComparison.OrdinalIgnoreCase),
+                "gt" => string.Compare(actual, value, StringComparison.OrdinalIgnoreCase) > 0,
+                "lt" => string.Compare(actual, value, StringComparison.OrdinalIgnoreCase) < 0,
+                _ => actual.Equals(value, StringComparison.OrdinalIgnoreCase),
+            };
+        }).ToList();
+    }
+
+    return rows;
+}
+
+static string DictValue(IReadOnlyDictionary<string, object?> row, string field)
+{
+    if (row.TryGetValue(field, out var exact))
+        return exact?.ToString() ?? "";
+
+    var fallback = row.FirstOrDefault(entry =>
+        entry.Key.Equals(field, StringComparison.OrdinalIgnoreCase));
+    return fallback.Key is null ? "" : fallback.Value?.ToString() ?? "";
 }

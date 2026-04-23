@@ -2,7 +2,8 @@
 
 import { usePuck } from "@puckeditor/core";
 import { useEffect, useMemo, useState } from "react";
-import type { ConditionalRule, ConditionOperator, DataSourceDefinition } from "@/lib/datasource-template";
+import { getDisplaySourcesFromRootProps } from "@/lib/datasource-roots";
+import type { ConditionalRule, ConditionOperator } from "@/lib/datasource-template";
 
 type TableMeta = {
   id: string;
@@ -114,7 +115,7 @@ export function ConditionalRuleFieldRenderer({
 }: ConditionalRuleFieldRendererProps) {
   const { appState } = usePuck();
   const rootProps = (appState.data.root as { props?: Record<string, unknown> }).props ?? {};
-  const dataSources = (rootProps.dataSources as DataSourceDefinition[]) ?? [];
+  const dataSources = getDisplaySourcesFromRootProps(rootProps as Record<string, unknown>);
   const [tables, setTables] = useState<TableMeta[]>([]);
   const rule = useMemo(() => normalizeRule(value), [value]);
 

@@ -19,12 +19,14 @@ async function fetchTables(): Promise<TableMeta[]> {
   }
 }
 
-// ── DataSourceManager – edits root.props.dataSources ──────────────────────
+// ── DataSourceManager – edits a datasource array field ─────────────────────
 
 export function DataSourceManager({
+  kind = "display",
   value,
   onChange,
 }: {
+  kind?: "display" | "sink";
   value?: DataSourceDefinition[];
   onChange: (v: DataSourceDefinition[]) => void;
 }) {
@@ -39,7 +41,7 @@ export function DataSourceManager({
     const first = tables[0];
     const newDs: DataSourceDefinition = {
       id,
-      name: `datasource_${sources.length + 1}`,
+      name: `${kind}_source_${sources.length + 1}`,
       tableId: first?.id ?? "",
       tableName: first?.displayName ?? "",
       queryType: "single",
@@ -99,9 +101,15 @@ export function DataSourceManager({
 
   return (
     <div className="space-y-2">
+      <p className="text-xs text-gray-500 px-1">
+        {kind === "display"
+          ? "Used by merge tags, conditional rules, and form-prefill option sources."
+          : "Used by forms as writeback targets."}
+      </p>
       {sources.map((ds, idx) => {
         const tableMeta = tables.find((t) => t.id === ds.tableId);
         const isOpen = expanded === ds.id;
+        const queryType = ds.queryType || "single";
         return (
           <div className="border border-gray-200 rounded-md overflow-hidden" key={ds.id}>
             <button
@@ -112,7 +120,7 @@ export function DataSourceManager({
               <span className="flex items-center gap-2">
                 <Database size={12} />
                 <span className="font-mono">{ds.name}</span>
-                <span className="font-normal text-gray-500">({ds.queryType})</span>
+                <span className="font-normal text-gray-500">({queryType})</span>
               </span>
               {isOpen ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
             </button>
@@ -126,7 +134,11 @@ export function DataSourceManager({
                     onChange={(e) => updateSource(idx, { name: e.target.value.replace(/\s+/g, "_") })}
                     value={ds.name}
                   />
-                  <span className="text-gray-400">Used as ViewBag key and in field bindings</span>
+                  <span className="text-gray-400">
+                    {kind === "display"
+                      ? "Used in merge tags, list bindings, and conditional rules."
+                      : "Used as the form sink identifier."}
+                  </span>
                 </label>
 
                 <label className="grid gap-1">
@@ -142,82 +154,86 @@ export function DataSourceManager({
                   </select>
                 </label>
 
-                <label className="grid gap-1">
-                  <span className="font-bold text-gray-600">Query type</span>
-                  <select
-                    className="border border-gray-200 rounded px-2 py-1 bg-white"
-                    onChange={(e) => updateSource(idx, { queryType: e.target.value as "single" | "list" })}
-                    value={ds.queryType}
-                  >
-                    <option value="single">Single record</option>
-                    <option value="list">List of records</option>
-                  </select>
-                </label>
-
-                {ds.queryType === "list" && (
-                  <label className="grid gap-1">
-                    <span className="font-bold text-gray-600">Limit</span>
-                    <input
-                      className="border border-gray-200 rounded px-2 py-1 w-24"
-                      max={500}
-                      min={1}
-                      onChange={(e) => updateSource(idx, { limit: Number(e.target.value) })}
-                      type="number"
-                      value={ds.limit ?? 10}
-                    />
-                  </label>
-                )}
-
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-gray-600">Filters</span>
-                    <button
-                      className="text-blue-600 hover:underline flex items-center gap-1"
-                      onClick={() => addFilter(idx)}
-                      type="button"
-                    >
-                      <Plus size={10} /> Add
-                    </button>
-                  </div>
-                  {(ds.filters ?? []).map((f, fi) => (
-                    <div className="flex gap-1 items-center" key={fi}>
+                {kind === "display" ? (
+                  <>
+                    <label className="grid gap-1">
+                      <span className="font-bold text-gray-600">Query type</span>
                       <select
-                        className="border border-gray-200 rounded px-1 py-1 bg-white flex-1"
-                        onChange={(e) => updateFilter(idx, fi, { field: e.target.value })}
-                        value={f.field}
+                        className="border border-gray-200 rounded px-2 py-1 bg-white"
+                        onChange={(e) => updateSource(idx, { queryType: e.target.value as "single" | "list" })}
+                        value={queryType}
                       >
-                        <option value="">— field —</option>
-                        {(tableMeta?.columns ?? []).map((c) => (
-                          <option key={c.name} value={c.name}>{c.displayName || c.name}</option>
-                        ))}
+                        <option value="single">Single record</option>
+                        <option value="list">List of records</option>
                       </select>
-                      <select
-                        className="border border-gray-200 rounded px-1 py-1 bg-white w-20"
-                        onChange={(e) => updateFilter(idx, fi, { op: e.target.value as DataSourceFilter["op"] })}
-                        value={f.op}
-                      >
-                        <option value="eq">equals</option>
-                        <option value="neq">not equals</option>
-                        <option value="contains">contains</option>
-                        <option value="gt">greater than</option>
-                        <option value="lt">less than</option>
-                      </select>
-                      <input
-                        className="border border-gray-200 rounded px-1 py-1 flex-1"
-                        onChange={(e) => updateFilter(idx, fi, { value: e.target.value })}
-                        placeholder="value"
-                        value={f.value}
-                      />
-                      <button
-                        className="text-red-400 hover:text-red-600"
-                        onClick={() => removeFilter(idx, fi)}
-                        type="button"
-                      >
-                        <Trash2 size={12} />
-                      </button>
+                    </label>
+
+                    {queryType === "list" && (
+                      <label className="grid gap-1">
+                        <span className="font-bold text-gray-600">Limit</span>
+                        <input
+                          className="border border-gray-200 rounded px-2 py-1 w-24"
+                          max={500}
+                          min={1}
+                          onChange={(e) => updateSource(idx, { limit: Number(e.target.value) })}
+                          type="number"
+                          value={ds.limit ?? 10}
+                        />
+                      </label>
+                    )}
+
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-gray-600">Filters</span>
+                        <button
+                          className="text-blue-600 hover:underline flex items-center gap-1"
+                          onClick={() => addFilter(idx)}
+                          type="button"
+                        >
+                          <Plus size={10} /> Add
+                        </button>
+                      </div>
+                      {(ds.filters ?? []).map((f, fi) => (
+                        <div className="flex gap-1 items-center" key={fi}>
+                          <select
+                            className="border border-gray-200 rounded px-1 py-1 bg-white flex-1"
+                            onChange={(e) => updateFilter(idx, fi, { field: e.target.value })}
+                            value={f.field}
+                          >
+                            <option value="">— field —</option>
+                            {(tableMeta?.columns ?? []).map((c) => (
+                              <option key={c.name} value={c.name}>{c.displayName || c.name}</option>
+                            ))}
+                          </select>
+                          <select
+                            className="border border-gray-200 rounded px-1 py-1 bg-white w-20"
+                            onChange={(e) => updateFilter(idx, fi, { op: e.target.value as DataSourceFilter["op"] })}
+                            value={f.op}
+                          >
+                            <option value="eq">equals</option>
+                            <option value="neq">not equals</option>
+                            <option value="contains">contains</option>
+                            <option value="gt">greater than</option>
+                            <option value="lt">less than</option>
+                          </select>
+                          <input
+                            className="border border-gray-200 rounded px-1 py-1 flex-1"
+                            onChange={(e) => updateFilter(idx, fi, { value: e.target.value })}
+                            placeholder="value"
+                            value={f.value}
+                          />
+                          <button
+                            className="text-red-400 hover:text-red-600"
+                            onClick={() => removeFilter(idx, fi)}
+                            type="button"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
+                  </>
+                ) : null}
 
                 <div className="flex justify-end pt-1">
                   <button

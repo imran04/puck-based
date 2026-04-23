@@ -1,7 +1,7 @@
 import type { Data } from "@puckeditor/core";
 import sanitizeHtml from "sanitize-html";
 import { exportedPageStyles } from "@/puck/export-styles";
-import { safeFormAction, safeLinkUrl, safeMediaUrl } from "@/lib/url";
+import { safeLinkUrl, safeMediaUrl } from "@/lib/url";
 import {
   defaultFormProps,
   fieldClassName,
@@ -597,9 +597,16 @@ function renderComponent(item: PuckItem): string {
         ...props,
         fields,
       } as FormBlockProps;
+      const formId = normalizeName(
+        String(props.formId || props.id || formProps.title || "form"),
+        "form",
+      );
 
-      return `<form action="${escapeHtml(safeFormAction(String(formProps.actionUrl || "")))}" class="${formClassName(formProps)}" method="post">
-  <input name="_formTitle" type="hidden" value="${escapeHtml(String(props.title || "Form"))}" />
+      return `<form action="/api/forms/runtime-submit" class="${formClassName(formProps)}" method="post" enctype="multipart/form-data">
+  <input name="_pbPageId" type="hidden" value="" />
+  <input name="_pbPageSlug" type="hidden" value="" />
+  <input name="_pbFormId" type="hidden" value="${escapeHtml(formId)}" />
+  <input name="_pbFormTitle" type="hidden" value="${escapeHtml(String(props.title || "Form"))}" />
   <div>
     <h2 class="pb-form__title">${escapeHtml(String(formProps.title || "Form"))}</h2>
     ${

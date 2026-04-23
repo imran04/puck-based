@@ -15,7 +15,7 @@ import {
   Undo2,
 } from "lucide-react";
 import Link from "next/link";
-import { useMemo, useState, type CSSProperties } from "react";
+import { useMemo, useState } from "react";
 import { puckConfig } from "@/puck/config";
 import { ReusableLibraryModal } from "./ReusableLibraryModal";
 
@@ -46,15 +46,13 @@ type PuckEditorToolbarProps = {
   publish: (data: Data) => Promise<void>;
 };
 
-function PuckEditorToolbar({ links, publish }: PuckEditorToolbarProps) {
+function PuckHeaderActions({ links, publish }: PuckEditorToolbarProps) {
   const { appState, dispatch, history } = usePuck();
   const data = appState.data as Data;
   const leftSideBarVisible = appState.ui?.leftSideBarVisible ?? true;
   const rightSideBarVisible = appState.ui?.rightSideBarVisible ?? true;
   const uiViewports = appState.ui?.viewports;
   const currentViewport = uiViewports?.current ?? { width: "100%", height: 900 };
-  const rootProps = "props" in data.root ? data.root.props : data.root;
-  const title = rootProps?.title || "Untitled page";
 
   function toggleLeftSidebar() {
     dispatch({
@@ -87,129 +85,75 @@ function PuckEditorToolbar({ links, publish }: PuckEditorToolbarProps) {
   }
 
   return (
-    <div className="studio-puck__toolbar">
-      <div className="studio-puck__title">
-        <span>{title}</span>
+    <div className="studio-puck__tools studio-puck__tools--header">
+      <div className="studio-puck__viewport-switcher" aria-label="Viewport controls" role="group">
+        {builderViewports.map((viewport) => {
+          const selected =
+            viewport.width === currentViewport.width &&
+            (viewport.height ?? "auto") === currentViewport.height;
+
+          return (
+            <button
+              aria-label={`Switch to ${viewport.label}`}
+              aria-pressed={selected}
+              className="studio-puck__viewport-btn"
+              key={`${viewport.label}-${String(viewport.width)}`}
+              onClick={() => selectViewport(viewport)}
+              title={viewport.label}
+              type="button"
+            >
+              {viewport.label}
+            </button>
+          );
+        })}
       </div>
-      <div className="studio-puck__tools">
-        <div className="studio-puck__viewport-switcher" aria-label="Viewport controls" role="group">
-          {builderViewports.map((viewport) => {
-            const selected =
-              viewport.width === currentViewport.width &&
-              (viewport.height ?? "auto") === currentViewport.height;
-
-            return (
-              <button
-                aria-label={`Switch to ${viewport.label}`}
-                aria-pressed={selected}
-                className="studio-puck__viewport-btn"
-                key={`${viewport.label}-${String(viewport.width)}`}
-                onClick={() => selectViewport(viewport)}
-                title={viewport.label}
-                type="button"
-              >
-                {viewport.label}
-              </button>
-            );
-          })}
-        </div>
-        <button
-          aria-label={leftSideBarVisible ? "Hide left panel" : "Show left panel"}
-          aria-pressed={leftSideBarVisible}
-          className="studio-puck__panel-toggle"
-          onClick={toggleLeftSidebar}
-          title={leftSideBarVisible ? "Hide left panel" : "Show left panel"}
-          type="button"
-        >
-          <PanelLeft size={16} />
-        </button>
-        <button
-          aria-label={rightSideBarVisible ? "Hide right panel" : "Show right panel"}
-          aria-pressed={rightSideBarVisible}
-          className="studio-puck__panel-toggle"
-          onClick={toggleRightSidebar}
-          title={rightSideBarVisible ? "Hide right panel" : "Show right panel"}
-          type="button"
-        >
-          <PanelRight size={16} />
-        </button>
-        <button
-          aria-label="Undo"
-          disabled={!history.hasPast}
-          onClick={history.back}
-          title="Undo"
-          type="button"
-        >
-          <Undo2 size={16} />
-        </button>
-        <button
-          aria-label="Redo"
-          disabled={!history.hasFuture}
-          onClick={history.forward}
-          title="Redo"
-          type="button"
-        >
-          <Redo2 size={16} />
-        </button>
-        <button className="studio-puck__publish" onClick={() => publish(data)} type="button">
-          <Rocket size={15} />
-          Publish
-        </button>
-        <ReusableLibraryModal data={data} />
-        <a className="studio-puck__live" href={links.preview} target="_blank">
-          <ExternalLink size={15} />
-          Live
-        </a>
-      </div>
-    </div>
-  );
-}
-
-function PuckEditorLayout({ links, publish }: PuckEditorToolbarProps) {
-  const { appState } = usePuck();
-  const leftSideBarVisible = appState.ui?.leftSideBarVisible ?? true;
-  const rightSideBarVisible = appState.ui?.rightSideBarVisible ?? true;
-  const currentViewport = appState.ui?.viewports?.current ?? { width: "100%", height: 900 };
-  const previewStyle = {
-    "--studio-preview-width":
-      currentViewport.width === "100%" ? "100%" : `${currentViewport.width}px`,
-    "--studio-preview-min-height":
-      currentViewport.height === "auto" ? "760px" : `${currentViewport.height}px`,
-  } as CSSProperties;
-  const className = [
-    "studio-puck",
-    leftSideBarVisible ? "" : "studio-puck--no-left",
-    rightSideBarVisible ? "" : "studio-puck--no-right",
-  ]
-    .filter(Boolean)
-    .join(" ");
-
-  return (
-    <div className={className}>
-      {leftSideBarVisible ? (
-        <aside className="studio-puck__panel studio-puck__library" aria-label="Blocks and outline">
-          <section>
-            <h2>Components</h2>
-            <Puck.Components />
-          </section>
-          <section>
-            <h2>Outline</h2>
-            <Puck.Outline />
-          </section>
-        </aside>
-      ) : null}
-      <main className="studio-puck__main">
-        <PuckEditorToolbar links={links} publish={publish} />
-        <div className="studio-puck__preview" style={previewStyle}>
-          <Puck.Preview />
-        </div>
-      </main>
-      {rightSideBarVisible ? (
-        <aside className="studio-puck__panel studio-puck__inspector" aria-label="Inspector">
-          <h2>Inspector</h2>
-          <Puck.Fields />
-        </aside>
-      ) : null}
+      <button
+        aria-label={leftSideBarVisible ? "Hide left panel" : "Show left panel"}
+        aria-pressed={leftSideBarVisible}
+        className="studio-puck__panel-toggle"
+        onClick={toggleLeftSidebar}
+        title={leftSideBarVisible ? "Hide left panel" : "Show left panel"}
+        type="button"
+      >
+        <PanelLeft size={16} />
+      </button>
+      <button
+        aria-label={rightSideBarVisible ? "Hide right panel" : "Show right panel"}
+        aria-pressed={rightSideBarVisible}
+        className="studio-puck__panel-toggle"
+        onClick={toggleRightSidebar}
+        title={rightSideBarVisible ? "Hide right panel" : "Show right panel"}
+        type="button"
+      >
+        <PanelRight size={16} />
+      </button>
+      <button
+        aria-label="Undo"
+        disabled={!history.hasPast}
+        onClick={history.back}
+        title="Undo"
+        type="button"
+      >
+        <Undo2 size={16} />
+      </button>
+      <button
+        aria-label="Redo"
+        disabled={!history.hasFuture}
+        onClick={history.forward}
+        title="Redo"
+        type="button"
+      >
+        <Redo2 size={16} />
+      </button>
+      <button className="studio-puck__publish" onClick={() => publish(data)} type="button">
+        <Rocket size={15} />
+        Publish
+      </button>
+      <ReusableLibraryModal data={data} />
+      <a className="studio-puck__live" href={links.preview} rel="noreferrer" target="_blank">
+        <ExternalLink size={15} />
+        Live
+      </a>
     </div>
   );
 }
@@ -319,6 +263,9 @@ export function PuckStudio({
           iframe={{ enabled: false }}
           onChange={setCurrentData}
           onPublish={publish}
+          renderHeaderActions={() => (
+            <PuckHeaderActions links={links} publish={publish} />
+          )}
           ui={{
             leftSideBarVisible: true,
             plugin: { current: "blocks" },
@@ -331,7 +278,7 @@ export function PuckStudio({
           }}
           viewports={builderViewports}
         >
-          <PuckEditorLayout links={links} publish={publish} />
+          <Puck.Layout />
         </Puck>
       </div>
     </div>
