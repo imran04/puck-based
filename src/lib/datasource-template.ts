@@ -25,6 +25,7 @@ import {
   type FormLayout,
   type SelectOptionSource,
 } from "@/puck/form-schema";
+import { resolveMediaSource, safeMediaUrl } from "@/lib/url";
 
 export type DataSourceFilter = {
   field: string;
@@ -126,6 +127,13 @@ function escHtml(v: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function textLines(value: unknown): string[] {
+  return String(value || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
 }
 
 function sanitizePredicateMarker(value: string) {
@@ -733,14 +741,154 @@ function renderItemWithMarkers(
       return `<a class="${cls}" href="${href}">${label}</a>`;
     }
 
-    case "ImageBlock":
-      return `<figure class="pb-image pb-image--${escHtml(String(props.aspect || "wide"))}"><img alt="${escHtml(String(props.alt || "Image"))}" src="${escHtml(String(props.src || ""))}" /></figure>`;
+    case "ImageBlock": {
+      const src = resolveMediaSource({
+        assetId: String(props.assetId || ""),
+        src: String(props.src || ""),
+      });
+      return `<figure class="pb-image pb-image--${escHtml(String(props.aspect || "wide"))}">
+  ${
+    src
+      ? `<img alt="${escHtml(String(props.alt || "Image"))}" src="${escHtml(src)}" />`
+      : `<div class="pb-media-placeholder">Image</div>`
+  }
+  ${props.caption ? `<figcaption>${escHtml(String(props.caption))}</figcaption>` : ""}
+</figure>`;
+    }
+
+    case "VideoEmbed": {
+      const url = safeMediaUrl(String(props.url || ""));
+      return `<figure class="pb-video">
+  <div class="pb-video__frame">
+    ${
+      url
+        ? `<iframe allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen src="${escHtml(url)}" title="${escHtml(String(props.title || "Video"))}"></iframe>`
+        : `<div class="pb-media-placeholder">Video</div>`
+    }
+  </div>
+  ${props.caption ? `<figcaption>${escHtml(String(props.caption))}</figcaption>` : ""}
+</figure>`;
+    }
+
+    case "Gallery": {
+      const images = [props.imageOne, props.imageTwo, props.imageThree, props.imageFour].map(
+        (source) => safeMediaUrl(String(source || "")),
+      );
+      return `<figure class="pb-gallery">
+  <div class="pb-gallery__grid">
+    ${images
+      .map((source, index) =>
+        source
+          ? `<img alt="Gallery image ${index + 1}" src="${escHtml(source)}" />`
+          : `<div class="pb-media-placeholder">Image ${index + 1}</div>`,
+      )
+      .join("")}
+  </div>
+  ${props.caption ? `<figcaption>${escHtml(String(props.caption))}</figcaption>` : ""}
+</figure>`;
+    }
 
     case "Testimonial": {
       const quote = bindOrFallback(bindings, "quote", escHtml(String(props.quote || "")));
       const name  = bindOrFallback(bindings, "name",  escHtml(String(props.name || "")));
       const role  = bindOrFallback(bindings, "role",  escHtml(String(props.role || "")));
-      return `<article class="pb-testimonial"><p>${quote}</p><div class="pb-testimonial__person"><div><strong>${name}</strong><small>${role}</small></div></div></article>`;
+      const avatar = safeMediaUrl(String(props.avatarUrl || ""));
+      return `<article class="pb-testimonial">
+  <p>${quote}</p>
+  <div class="pb-testimonial__person">
+    ${
+      avatar
+        ? `<img alt="" src="${escHtml(avatar)}" />`
+        : `<span aria-hidden="true">${escHtml(String(props.name || "T").slice(0, 1).toUpperCase())}</span>`
+    }
+    <div><strong>${name}</strong><small>${role}</small></div>
+  </div>
+</article>`;
+    }
+
+    case "Stats": {
+      const stats = [
+        [props.statOneValue, props.statOneLabel],
+        [props.statTwoValue, props.statTwoLabel],
+        [props.statThreeValue, props.statThreeLabel],
+      ];
+      return `<div class="pb-stats">
+  ${stats
+    .map(
+      ([value, label]) => `<div class="pb-stat"><strong>${escHtml(String(value || ""))}</strong><span>${escHtml(String(label || ""))}</span></div>`,
+    )
+    .join("")}
+</div>`;
+    }
+
+    case "Faq": {
+      const faqs = [
+        [props.questionOne, props.answerOne],
+        [props.questionTwo, props.answerTwo],
+        [props.questionThree, props.answerThree],
+      ];
+      return `<div class="pb-faq">
+  ${faqs
+    .map(
+      ([question, answer], index) => `<details${index === 0 ? " open" : ""}><summary>${escHtml(String(question || ""))}</summary><p>${escHtml(String(answer || ""))}</p></details>`,
+    )
+    .join("")}
+</div>`;
+    }
+
+    case "TextList": {
+      const tag = props.style === "numbers" ? "ol" : "ul";
+      return `<div class="pb-text-list pb-text-list--${escHtml(String(props.style || "bullets"))}">
+  ${props.title ? `<h3>${escHtml(String(props.title))}</h3>` : ""}
+  <${tag}>${textLines(props.items).map((line) => `<li>${escHtml(line)}</li>`).join("")}</${tag}>
+</div>`;
+    }
+
+    case "LogoStrip": {
+      return `<div class="pb-logo-strip">
+  ${props.title ? `<p>${escHtml(String(props.title))}</p>` : ""}
+  <div>${textLines(props.logos).map((line) => `<span>${escHtml(line)}</span>`).join("")}</div>
+</div>`;
+    }
+
+    case "TableBlock": {
+      const rows = textLines(props.rows).map((row) => row.split("|").map((cell) => cell.trim()));
+      const [header, ...body] = rows;
+      return `<div class="pb-table-wrap">
+  <table class="pb-table">
+    ${props.caption ? `<caption>${escHtml(String(props.caption))}</caption>` : ""}
+    ${
+      header
+        ? `<thead><tr>${header.map((cell) => `<th>${escHtml(cell)}</th>`).join("")}</tr></thead>`
+        : ""
+    }
+    <tbody>
+      ${body
+        .map((row) => `<tr>${row.map((cell) => `<td>${escHtml(cell)}</td>`).join("")}</tr>`)
+        .join("")}
+    </tbody>
+  </table>
+</div>`;
+    }
+
+    case "CodeBlock":
+      return `<figure class="pb-code"><figcaption>${escHtml(String(props.language || ""))}</figcaption><pre><code>${escHtml(String(props.code || ""))}</code></pre></figure>`;
+
+    case "EmbedBlock": {
+      const url = safeMediaUrl(String(props.url || ""));
+      const height = Number(props.height) || 420;
+      return `<div class="pb-embed" style="--pb-embed-height:${escHtml(String(height))}px;">
+  ${url ? `<iframe src="${escHtml(url)}" title="${escHtml(String(props.title || "Embed"))}"></iframe>` : `<div class="pb-media-placeholder">Embed</div>`}
+</div>`;
+    }
+
+    case "SavedSection":
+    case "SavedForm": {
+      const block = props.block as { data?: unknown } | undefined;
+      if (block?.data && typeof block.data === "object" && "type" in (block.data as Record<string, unknown>)) {
+        return renderItemWithMarkers(block.data as PuckItem, context);
+      }
+      return `<div class="pb-empty-state">Choose a saved item from the library.</div>`;
     }
 
     case "FormBlock": {

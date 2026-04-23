@@ -6,6 +6,7 @@ import "@puckeditor/core/puck.css";
 import {
   Download,
   ExternalLink,
+  FileCode2,
   LayoutTemplate,
   Menu,
   PanelLeft,
@@ -13,6 +14,7 @@ import {
   Redo2,
   Rocket,
   Undo2,
+  X,
 } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
@@ -42,6 +44,7 @@ type PuckEditorToolbarProps = {
   links: {
     preview: string;
     export: string;
+    cshtml: string;
   };
   publish: (data: Data) => Promise<void>;
 };
@@ -154,6 +157,10 @@ function PuckHeaderActions({ links, publish }: PuckEditorToolbarProps) {
         <ExternalLink size={15} />
         Live
       </a>
+      <a className="studio-puck__live" href={links.cshtml} rel="noreferrer" target="_blank">
+        <FileCode2 size={15} />
+        CSHTML
+      </a>
     </div>
   );
 }
@@ -168,17 +175,23 @@ export function PuckStudio({
   const [status, setStatus] = useState(
     publishedAt ? `Last published ${new Date(publishedAt).toLocaleString()}` : "Unpublished",
   );
+  const [publishIssue, setPublishIssue] = useState<{
+    error: string;
+    details?: string;
+  } | null>(null);
 
   const links = useMemo(
     () => ({
       preview: `/p/${pageId}`,
       export: `/api/pages/${pageId}/export`,
+      cshtml: `/api/pages/${pageId}/cshtml`,
     }),
     [pageId],
   );
 
   async function publish(data: Data) {
     setStatus("Publishing...");
+    setPublishIssue(null);
 
     const response = await fetch(`/api/pages/${pageId}/publish`, {
       method: "POST",
@@ -187,7 +200,26 @@ export function PuckStudio({
     });
 
     if (!response.ok) {
+      let errorMessage = "Publish failed";
+      let details: string | undefined;
+
+      try {
+        const payload = (await response.json()) as { error?: string; details?: string };
+        if (payload.error?.trim()) {
+          errorMessage = payload.error.trim();
+        }
+        if (payload.details?.trim()) {
+          details = payload.details.trim();
+        }
+      } catch {
+        // Ignore JSON parse errors and keep generic message.
+      }
+
       setStatus("Publish failed");
+      setPublishIssue({
+        error: errorMessage,
+        details,
+      });
       return;
     }
 
@@ -197,6 +229,7 @@ export function PuckStudio({
         ? `Published ${new Date(payload.page.publishedAt).toLocaleString()}`
         : "Published",
     );
+    setPublishIssue(null);
   }
 
   return (
@@ -228,6 +261,10 @@ export function PuckStudio({
                   <Download size={15} />
                   Export current
                 </a>
+                <a href={links.cshtml} target="_blank">
+                  <FileCode2 size={15} />
+                  View CSHTML
+                </a>
               </section>
               <section>
                 <p>Created pages</p>
@@ -253,8 +290,27 @@ export function PuckStudio({
             <Download size={16} />
             Export HTML
           </a>
+          <a className="studio-icon-link" href={links.cshtml} target="_blank">
+            <FileCode2 size={16} />
+            CSHTML
+          </a>
         </div>
       </header>
+      {publishIssue ? (
+        <div className="studio-notice studio-notice--error" role="status">
+          <div>
+            <strong>{publishIssue.error}</strong>
+            {publishIssue.details ? <pre>{publishIssue.details}</pre> : null}
+          </div>
+          <button
+            aria-label="Dismiss publish error"
+            onClick={() => setPublishIssue(null)}
+            type="button"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      ) : null}
       <div className="studio-builder">
         <Puck
           config={puckConfig}

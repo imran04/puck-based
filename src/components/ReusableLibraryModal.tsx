@@ -58,7 +58,7 @@ function cloneItem(item: ComponentData): ComponentData {
 function labelForItem(item: ComponentData, fallback: string) {
   const props = (item.props || {}) as Record<string, unknown>;
 
-  for (const key of ["title", "text", "label", "eyebrow"]) {
+  for (const key of ["_instanceName", "title", "text", "label", "eyebrow"]) {
     const value = props[key];
 
     if (typeof value === "string" && value.trim()) {

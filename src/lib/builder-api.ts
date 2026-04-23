@@ -15,6 +15,15 @@ type ApiPage = {
   publishedAt?: string | null;
 };
 
+type ApiPageCshtml = {
+  id: string;
+  title: string;
+  slug: string;
+  publishedAt?: string | null;
+  updatedAt: string;
+  razorTemplate: string;
+};
+
 const defaultApiUrl = "http://127.0.0.1:5056";
 const apiBaseUrl = (process.env.BUILDER_API_URL || defaultApiUrl).replace(/\/$/, "");
 
@@ -55,6 +64,10 @@ async function builderFetch<T>(
 
 export async function getApiPage(pageId: string) {
   return builderFetch<ApiPage>(`/api/pages/${encodeURIComponent(pageId)}`);
+}
+
+export async function getApiPageCshtml(pageId: string) {
+  return builderFetch<ApiPageCshtml>(`/api/pages/${encodeURIComponent(pageId)}/cshtml`);
 }
 
 export async function listApiPages() {
@@ -99,7 +112,30 @@ export async function publishApiPage(pageId: string, title: string, data: Data, 
 
     if (!response.ok) {
       const errorBody = await response.text();
-      throw new Error(errorBody || `Builder API ${response.status}`);
+      let message = errorBody || `Builder API ${response.status}`;
+      let details: string | undefined;
+
+      try {
+        const parsed = JSON.parse(errorBody) as { error?: unknown; details?: unknown };
+        if (typeof parsed.error === "string" && parsed.error.trim()) {
+          message = parsed.error.trim();
+        }
+        if (typeof parsed.details === "string" && parsed.details.trim()) {
+          details = parsed.details.trim();
+        }
+      } catch {
+        // Keep raw response text as message.
+      }
+
+      const publishError = new Error(message) as Error & {
+        status?: number;
+        details?: string;
+        raw?: string;
+      };
+      publishError.status = response.status;
+      publishError.details = details;
+      publishError.raw = errorBody;
+      throw publishError;
     }
 
     return (await response.json()) as ApiPage;

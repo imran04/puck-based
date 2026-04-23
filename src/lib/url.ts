@@ -66,3 +66,21 @@ export function safeMediaUrl(value: string | undefined, fallback = "") {
     return fallback;
   }
 }
+
+export function mediaAssetPath(assetId: string | undefined, fallback = "") {
+  const trimmed = (assetId || "").trim();
+
+  if (!trimmed) {
+    return fallback;
+  }
+
+  return `/media/${encodeURIComponent(trimmed)}`;
+}
+
+export function resolveMediaSource(
+  value: { assetId?: string; src?: string },
+  fallback = "",
+) {
+  const assetPath = mediaAssetPath(value.assetId);
+  return assetPath || safeMediaUrl(value.src, fallback);
+}

@@ -4,6 +4,7 @@ import { ConditionalRuleFieldRenderer } from "@/components/ConditionalRuleFieldR
 import { DsBindingsFieldRenderer } from "@/components/DsBindingsFieldRenderer";
 import { FormDataSinkFieldRenderer } from "@/components/FormDataSinkFieldRenderer";
 import { FormDesignerModalField } from "@/components/FormDesignerModalField";
+import { MediaAssetField } from "@/components/MediaAssetField";
 import { MergeTextField } from "@/components/MergeTextField";
 import { ReusableBlockPicker } from "@/components/ReusableBlockPicker";
 import { DataSourceManager } from "@/components/DataSourcePanel";
@@ -13,7 +14,7 @@ import type {
   DsBindings,
 } from "@/lib/datasource-template";
 import type { ReusableBlock } from "@/lib/reusable-blocks";
-import { safeLinkUrl, safeMediaUrl } from "@/lib/url";
+import { resolveMediaSource, safeLinkUrl, safeMediaUrl } from "@/lib/url";
 import { FormBlock, type FormBlockProps } from "./form";
 import { defaultFormProps, type FormDataSink, type FormField } from "./form-schema";
 import { mergeTags, renderMergeText } from "./merge-tags";
@@ -92,6 +93,7 @@ type DividerProps = {
 };
 
 type ImageBlockProps = {
+  assetId: string;
   src: string;
   alt: string;
   caption: string;
@@ -400,6 +402,33 @@ const defaultConditionalRule: ConditionalRule = {
   predicate: "",
 };
 
+function withInstanceNameFields<
+  T extends Record<string, { fields?: Record<string, unknown>; defaultProps?: Record<string, unknown> }>
+>(components: T): T {
+  const next = {} as T;
+
+  for (const [componentType, componentConfig] of Object.entries(components)) {
+    const config = componentConfig as {
+      fields?: Record<string, unknown>;
+      defaultProps?: Record<string, unknown>;
+    };
+
+    (next as Record<string, unknown>)[componentType] = {
+      ...config,
+      fields: {
+        _instanceName: { type: "text", label: "Block name" },
+        ...(config.fields ?? {}),
+      },
+      defaultProps: {
+        _instanceName: "",
+        ...(config.defaultProps ?? {}),
+      },
+    };
+  }
+
+  return next;
+}
+
 export const puckConfig: Config = {
   categories: {
     layout: {
@@ -468,7 +497,7 @@ export const puckConfig: Config = {
       <main className="pb-page">{children}</main>
     ),
   },
-  components: {
+  components: withInstanceNameFields({
     Hero: {
       label: "Hero",
       fields: {
@@ -1133,7 +1162,26 @@ export const puckConfig: Config = {
     ImageBlock: {
       label: "Image",
       fields: {
-        src: { type: "text", label: "Image URL" },
+        assetId: {
+          type: "custom",
+          label: "Media asset",
+          render: ({
+            value,
+            onChange,
+            readOnly,
+          }: {
+            value?: string;
+            onChange: (value: string) => void;
+            readOnly?: boolean;
+          }) => (
+            <MediaAssetField
+              onChange={onChange}
+              readOnly={readOnly}
+              value={typeof value === "string" ? value : ""}
+            />
+          ),
+        },
+        src: { type: "text", label: "External URL (fallback)" },
         alt: mergeTextField("Alt text", false),
         caption: mergeTextField("Caption"),
         aspect: {
@@ -1147,10 +1195,16 @@ export const puckConfig: Config = {
           ],
         },
       },
-      defaultProps: { src: "", alt: "Image", caption: "", aspect: "wide" } satisfies ImageBlockProps,
+      defaultProps: {
+        assetId: "",
+        src: "",
+        alt: "Image",
+        caption: "",
+        aspect: "wide",
+      } satisfies ImageBlockProps,
       render: (props) => {
-        const { src, alt, caption, aspect } = asProps<ImageBlockProps>(props);
-        const safeSrc = safeMediaUrl(src);
+        const { assetId, src, alt, caption, aspect } = asProps<ImageBlockProps>(props);
+        const safeSrc = resolveMediaSource({ assetId, src });
 
         return (
           <figure className={`pb-image pb-image--${aspect}`}>
@@ -1903,5 +1957,5 @@ export const puckConfig: Config = {
       } satisfies FormBlockProps,
       render: (props) => <FormBlock {...asProps<FormBlockProps>(props)} />,
     },
-  },
+  }),
 };

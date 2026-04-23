@@ -12,6 +12,7 @@ public sealed class BuilderDbContext(DbContextOptions<BuilderDbContext> options)
     public DbSet<TableRelation> TableRelations => Set<TableRelation>();
     public DbSet<DynamicRow> DynamicRows => Set<DynamicRow>();
     public DbSet<DynamicRelationRow> DynamicRelationRows => Set<DynamicRelationRow>();
+    public DbSet<MediaAsset> MediaAssets => Set<MediaAsset>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -103,6 +104,22 @@ public sealed class BuilderDbContext(DbContextOptions<BuilderDbContext> options)
             entity.HasKey(r => r.Id);
             entity.HasIndex(r => new { r.RelationId, r.FromRowId });
             entity.HasIndex(r => new { r.RelationId, r.ToRowId });
+        });
+
+        modelBuilder.Entity<MediaAsset>(entity =>
+        {
+            entity.ToTable("MediaAssets");
+            entity.HasKey(a => a.Id);
+            entity.Property(a => a.OriginalFileName).HasMaxLength(260);
+            entity.Property(a => a.StoredFileName).HasMaxLength(260);
+            entity.Property(a => a.RelativePath).HasMaxLength(1024);
+            entity.Property(a => a.MimeType).HasMaxLength(127);
+            entity.Property(a => a.HashSha256).HasMaxLength(64);
+            entity.Property(a => a.AltText).HasMaxLength(1024);
+            entity.Property(a => a.Caption).HasColumnType("nvarchar(max)");
+            entity.Property(a => a.TagsJson).HasColumnType("nvarchar(max)");
+            entity.HasIndex(a => a.CreatedAt);
+            entity.HasIndex(a => a.RelativePath).IsUnique();
         });
     }
 }

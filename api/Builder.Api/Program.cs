@@ -1,9 +1,11 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Builder.Api.Data;
 using Builder.Api.Models;
 using Builder.Api.Services;
+using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -30,6 +32,28 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 });
 
 var app = builder.Build();
+
+var mediaRootPath = ResolveMediaRootPath(builder.Configuration, app.Environment.ContentRootPath);
+var mediaOriginalsPath = Path.Combine(mediaRootPath, "originals");
+Directory.CreateDirectory(mediaRootPath);
+Directory.CreateDirectory(mediaOriginalsPath);
+
+var maxMediaUploadBytes = Math.Clamp(
+    builder.Configuration.GetValue("MediaStorage:MaxUploadBytes", 10 * 1024 * 1024),
+    1 * 1024 * 1024,
+    50 * 1024 * 1024);
+
+var allowedMediaMimeTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+{
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/gif",
+    "image/avif",
+    "image/svg+xml",
+};
+
+var contentTypeProvider = new FileExtensionContentTypeProvider();
 
 app.UseCors("BuilderStudio");
 
@@ -126,6 +150,30 @@ using (var scope = app.Services.CreateScope())
             ALTER TABLE FormSubmissions ADD RelayStatusCode int NULL;
         END
         """);
+
+    await db.Database.ExecuteSqlRawAsync("""
+        IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'MediaAssets')
+        BEGIN
+            CREATE TABLE MediaAssets (
+                Id uniqueidentifier NOT NULL PRIMARY KEY,
+                OriginalFileName nvarchar(260) NOT NULL,
+                StoredFileName nvarchar(260) NOT NULL,
+                RelativePath nvarchar(1024) NOT NULL,
+                MimeType nvarchar(127) NOT NULL,
+                SizeBytes bigint NOT NULL,
+                Width int NULL,
+                Height int NULL,
+                HashSha256 nvarchar(64) NULL,
+                AltText nvarchar(1024) NULL,
+                Caption nvarchar(max) NULL,
+                TagsJson nvarchar(max) NULL,
+                CreatedAt datetimeoffset NOT NULL,
+                UpdatedAt datetimeoffset NOT NULL
+            );
+            CREATE INDEX IX_MediaAssets_CreatedAt ON MediaAssets (CreatedAt DESC);
+            CREATE UNIQUE INDEX IX_MediaAssets_RelativePath ON MediaAssets (RelativePath);
+        END
+        """);
 }
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
@@ -170,6 +218,29 @@ app.MapGet("/api/pages/{id}", async (string id, BuilderDbContext db) =>
 {
     var page = await db.Pages.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id);
     return page is null ? Results.NotFound(new { error = "Page not found" }) : Results.Ok(PageDto.FromEntity(page));
+});
+
+app.MapGet("/api/pages/{id}/cshtml", async (string id, BuilderDbContext db) =>
+{
+    var page = await db.Pages
+        .AsNoTracking()
+        .FirstOrDefaultAsync(p => p.Id == id || p.Slug == id);
+
+    if (page is null)
+        return Results.NotFound(new { error = "Page not found" });
+
+    if (string.IsNullOrWhiteSpace(page.RazorTemplate))
+        return Results.NotFound(new { error = "No compiled CSHTML artifact found. Publish the page first." });
+
+    return Results.Ok(new
+    {
+        page.Id,
+        page.Title,
+        page.Slug,
+        page.PublishedAt,
+        page.UpdatedAt,
+        RazorTemplate = page.RazorTemplate,
+    });
 });
 
 app.MapPut("/api/pages/{id}/draft", async (string id, PublishPageRequest request, BuilderDbContext db) =>
@@ -260,6 +331,194 @@ app.MapDelete("/api/custom-blocks/{id:guid}", async (Guid id, BuilderDbContext d
     db.CustomBlocks.Remove(block);
     await db.SaveChangesAsync();
     return Results.NoContent();
+});
+
+// ── Media assets ───────────────────────────────────────────────────────────
+
+app.MapGet("/api/media", async (
+    string? search,
+    int? limit,
+    int? offset,
+    BuilderDbContext db) =>
+{
+    var take = Math.Clamp(limit ?? 48, 1, 200);
+    var skip = Math.Max(offset ?? 0, 0);
+    var query = db.MediaAssets.AsNoTracking();
+
+    if (!string.IsNullOrWhiteSpace(search))
+    {
+        var term = search.Trim();
+        query = query.Where(a =>
+            a.OriginalFileName.Contains(term) ||
+            (a.AltText != null && a.AltText.Contains(term)) ||
+            (a.Caption != null && a.Caption.Contains(term)) ||
+            (a.TagsJson != null && a.TagsJson.Contains(term)));
+    }
+
+    var total = await query.CountAsync();
+    var assets = await query
+        .OrderByDescending(a => a.CreatedAt)
+        .Skip(skip)
+        .Take(take)
+        .Select(a => MediaAssetDto.FromEntity(a))
+        .ToListAsync();
+
+    return Results.Ok(new
+    {
+        assets,
+        total,
+        limit = take,
+        offset = skip,
+    });
+});
+
+app.MapPost("/api/media/upload", async (HttpRequest request, BuilderDbContext db) =>
+{
+    if (!request.HasFormContentType)
+        return Results.BadRequest(new { error = "Expected multipart/form-data upload" });
+
+    var form = await request.ReadFormAsync();
+    if (form.Files.Count == 0)
+        return Results.BadRequest(new { error = "No files were uploaded" });
+
+    var uploaded = new List<MediaAsset>();
+    foreach (var file in form.Files)
+    {
+        if (file.Length <= 0)
+            continue;
+
+        if (file.Length > maxMediaUploadBytes)
+        {
+            return Results.BadRequest(new
+            {
+                error = $"File \"{file.FileName}\" exceeds the upload limit ({maxMediaUploadBytes / (1024 * 1024)} MB).",
+            });
+        }
+
+        var safeName = SafeUploadFileName(file.FileName, "upload");
+        var extension = NormalizeMediaExtension(Path.GetExtension(safeName));
+        var mimeType = NormalizeUploadedMimeType(file.ContentType, extension, contentTypeProvider);
+        if (extension == ".bin")
+            extension = ExtensionForMimeType(mimeType);
+
+        if (!allowedMediaMimeTypes.Contains(mimeType))
+        {
+            return Results.BadRequest(new
+            {
+                error = $"File \"{file.FileName}\" has unsupported type \"{mimeType}\".",
+            });
+        }
+
+        var assetId = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        var baseName = NormalizeMediaSlug(Path.GetFileNameWithoutExtension(safeName), "asset");
+        var storedFileName = $"{assetId:N}_{baseName}{extension.ToLowerInvariant()}";
+        var relativePath = Path.Combine(
+            "originals",
+            now.ToString("yyyy"),
+            now.ToString("MM"),
+            storedFileName).Replace('\\', '/');
+
+        if (!TryResolveMediaAbsolutePath(mediaRootPath, relativePath, out var absolutePath))
+            return Results.BadRequest(new { error = "Could not resolve upload path." });
+
+        var directory = Path.GetDirectoryName(absolutePath);
+        if (string.IsNullOrWhiteSpace(directory))
+            return Results.BadRequest(new { error = "Could not resolve upload target directory." });
+
+        Directory.CreateDirectory(directory);
+        await using var source = file.OpenReadStream();
+        var hash = await SaveFileAndComputeSha256(source, absolutePath);
+
+        var asset = new MediaAsset
+        {
+            Id = assetId,
+            OriginalFileName = safeName,
+            StoredFileName = storedFileName,
+            RelativePath = relativePath,
+            MimeType = mimeType,
+            SizeBytes = file.Length,
+            HashSha256 = hash,
+            CreatedAt = now,
+            UpdatedAt = now,
+        };
+
+        db.MediaAssets.Add(asset);
+        uploaded.Add(asset);
+    }
+
+    if (uploaded.Count == 0)
+        return Results.BadRequest(new { error = "No non-empty files were uploaded." });
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        assets = uploaded.Select(MediaAssetDto.FromEntity),
+    });
+});
+
+app.MapGet("/api/media/{id:guid}", async (Guid id, BuilderDbContext db) =>
+{
+    var asset = await db.MediaAssets.AsNoTracking().FirstOrDefaultAsync(a => a.Id == id);
+    return asset is null
+        ? Results.NotFound(new { error = "Media asset not found" })
+        : Results.Ok(MediaAssetDto.FromEntity(asset));
+});
+
+app.MapPatch("/api/media/{id:guid}", async (
+    Guid id,
+    UpdateMediaAssetRequest request,
+    BuilderDbContext db) =>
+{
+    var asset = await db.MediaAssets.FirstOrDefaultAsync(a => a.Id == id);
+    if (asset is null)
+        return Results.NotFound(new { error = "Media asset not found" });
+
+    asset.AltText = string.IsNullOrWhiteSpace(request.AltText) ? null : request.AltText.Trim();
+    asset.Caption = string.IsNullOrWhiteSpace(request.Caption) ? null : request.Caption.Trim();
+    asset.TagsJson = SerializeTags(request.Tags);
+    asset.UpdatedAt = DateTimeOffset.UtcNow;
+
+    await db.SaveChangesAsync();
+    return Results.Ok(MediaAssetDto.FromEntity(asset));
+});
+
+app.MapDelete("/api/media/{id:guid}", async (Guid id, BuilderDbContext db) =>
+{
+    var asset = await db.MediaAssets.FirstOrDefaultAsync(a => a.Id == id);
+    if (asset is null)
+        return Results.NotFound(new { error = "Media asset not found" });
+
+    db.MediaAssets.Remove(asset);
+    await db.SaveChangesAsync();
+
+    TryDeleteMediaFile(mediaRootPath, asset.RelativePath);
+    return Results.NoContent();
+});
+
+app.MapGet("/media/{id:guid}", async (
+    Guid id,
+    HttpResponse response,
+    BuilderDbContext db) =>
+{
+    var asset = await db.MediaAssets.AsNoTracking().FirstOrDefaultAsync(a => a.Id == id);
+    if (asset is null)
+        return Results.NotFound(new { error = "Media asset not found" });
+
+    if (!TryResolveMediaAbsolutePath(mediaRootPath, asset.RelativePath, out var path))
+        return Results.BadRequest(new { error = "Invalid media path" });
+
+    if (!File.Exists(path))
+        return Results.NotFound(new { error = "Media file not found on disk" });
+
+    response.Headers.CacheControl = "public, max-age=31536000, immutable";
+    response.Headers.ETag = $"\"{asset.Id:N}-{asset.UpdatedAt.ToUnixTimeSeconds()}\"";
+
+    return Results.File(
+        path,
+        contentType: string.IsNullOrWhiteSpace(asset.MimeType) ? "application/octet-stream" : asset.MimeType,
+        enableRangeProcessing: true);
 });
 
 // ── Form submissions ───────────────────────────────────────────────────────
@@ -731,23 +990,22 @@ static async Task<(Page? Page, string? CompileError)> UpsertPage(
 
     if (publish)
     {
-        page.PublishedJson = rawData;
-        page.PublishedAt   = now;
-
-        // Store datasource map
-        if (!string.IsNullOrWhiteSpace(request.DataSourceMapJson))
-            page.DataSourceMapJson = request.DataSourceMapJson;
-
-        // Store Razor CSHTML artifact
+        // Store Razor CSHTML artifact for diagnostics/debugging even if compile fails.
         if (!string.IsNullOrWhiteSpace(request.RazorTemplate))
             page.RazorTemplate = request.RazorTemplate;
 
-        // Compile and store C# renderer if source provided
+        // Compile and only advance published state when compile succeeds.
         if (!string.IsNullOrWhiteSpace(request.CsharpSource) && compiler is not null)
         {
             var result = compiler.Compile(request.CsharpSource);
             if (result.Success)
             {
+                page.PublishedJson = rawData;
+                page.PublishedAt = now;
+
+                if (!string.IsNullOrWhiteSpace(request.DataSourceMapJson))
+                    page.DataSourceMapJson = request.DataSourceMapJson;
+
                 page.CompiledAssemblyBytes = result.AssemblyBytes;
             }
             else
@@ -777,6 +1035,164 @@ static string SafeName(string value)
             char.IsLetterOrDigit(ch) || ch == '_' ? ch : '_').ToArray());
     normalized = string.Join("_", normalized.Split('_', StringSplitOptions.RemoveEmptyEntries));
     return string.IsNullOrWhiteSpace(normalized) ? $"table_{Guid.NewGuid():N}" : normalized;
+}
+
+static string ResolveMediaRootPath(IConfiguration configuration, string contentRootPath)
+{
+    var configured = configuration["MediaStorage:RootPath"]?.Trim();
+
+    if (!string.IsNullOrWhiteSpace(configured))
+    {
+        return Path.IsPathRooted(configured)
+            ? Path.GetFullPath(configured)
+            : Path.GetFullPath(Path.Combine(contentRootPath, configured));
+    }
+
+    return Path.GetFullPath(Path.Combine(contentRootPath, "..", "..", "data", "media"));
+}
+
+static bool TryResolveMediaAbsolutePath(string mediaRootPath, string relativePath, out string absolutePath)
+{
+    absolutePath = "";
+
+    var root = Path.GetFullPath(mediaRootPath);
+    var normalizedRelative = relativePath
+        .Replace('/', Path.DirectorySeparatorChar)
+        .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    var candidate = Path.GetFullPath(Path.Combine(root, normalizedRelative));
+    var rootPrefix = root.EndsWith(Path.DirectorySeparatorChar)
+        ? root
+        : $"{root}{Path.DirectorySeparatorChar}";
+
+    if (!candidate.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase))
+        return false;
+
+    absolutePath = candidate;
+    return true;
+}
+
+static string NormalizeUploadedMimeType(
+    string? rawMimeType,
+    string extension,
+    FileExtensionContentTypeProvider contentTypeProvider)
+{
+    var provided = (rawMimeType ?? "").Split(';', 2)[0].Trim().ToLowerInvariant();
+    if (!string.IsNullOrWhiteSpace(provided))
+        return provided;
+
+    if (contentTypeProvider.TryGetContentType($"file{NormalizeMediaExtension(extension)}", out var inferred))
+        return inferred.ToLowerInvariant();
+
+    return "application/octet-stream";
+}
+
+static string ExtensionForMimeType(string mimeType) =>
+    mimeType switch
+    {
+        "image/jpeg" => ".jpg",
+        "image/png" => ".png",
+        "image/webp" => ".webp",
+        "image/gif" => ".gif",
+        "image/avif" => ".avif",
+        "image/svg+xml" => ".svg",
+        _ => ".bin",
+    };
+
+static string SafeUploadFileName(string originalFileName, string fallbackBaseName)
+{
+    var fileName = Path.GetFileName(string.IsNullOrWhiteSpace(originalFileName)
+        ? fallbackBaseName
+        : originalFileName.Trim());
+    var extension = NormalizeMediaExtension(Path.GetExtension(fileName));
+    var baseName = NormalizeMediaSlug(Path.GetFileNameWithoutExtension(fileName), fallbackBaseName);
+    return $"{baseName}{extension}";
+}
+
+static string NormalizeMediaExtension(string extension)
+{
+    var raw = (extension ?? "").Trim().ToLowerInvariant();
+    if (string.IsNullOrWhiteSpace(raw))
+        return ".bin";
+
+    var safeChars = raw.Where(ch => char.IsLetterOrDigit(ch) || ch == '.').ToArray();
+    var safe = new string(safeChars);
+    if (!safe.StartsWith('.'))
+        safe = $".{safe}";
+    if (safe.Length > 12)
+        safe = safe[..12];
+
+    return safe.Length <= 1 ? ".bin" : safe;
+}
+
+static string NormalizeMediaSlug(string value, string fallback)
+{
+    var safe = new string(value
+        .Trim()
+        .ToLowerInvariant()
+        .Select(ch => char.IsLetterOrDigit(ch) ? ch : '-')
+        .ToArray());
+    safe = string.Join("-", safe.Split('-', StringSplitOptions.RemoveEmptyEntries));
+    return string.IsNullOrWhiteSpace(safe) ? fallback : safe;
+}
+
+static async Task<string> SaveFileAndComputeSha256(Stream source, string destinationPath)
+{
+    await using var destination = new FileStream(
+        destinationPath,
+        FileMode.Create,
+        FileAccess.Write,
+        FileShare.None,
+        bufferSize: 81920,
+        useAsync: true);
+
+    using var sha256 = SHA256.Create();
+    var buffer = new byte[81920];
+    while (true)
+    {
+        var read = await source.ReadAsync(buffer.AsMemory(0, buffer.Length));
+        if (read <= 0)
+            break;
+
+        await destination.WriteAsync(buffer.AsMemory(0, read));
+        sha256.TransformBlock(buffer, 0, read, null, 0);
+    }
+
+    sha256.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+    return Convert.ToHexString(sha256.Hash ?? Array.Empty<byte>()).ToLowerInvariant();
+}
+
+static string? SerializeTags(string[]? tags)
+{
+    if (tags is null || tags.Length == 0)
+        return null;
+
+    var cleaned = tags
+        .Select(tag => tag?.Trim())
+        .Where(tag => !string.IsNullOrWhiteSpace(tag))
+        .Select(tag => tag!)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .Take(40)
+        .ToArray();
+
+    return cleaned.Length == 0 ? null : JsonSerializer.Serialize(cleaned);
+}
+
+static void TryDeleteMediaFile(string mediaRootPath, string relativePath)
+{
+    if (!TryResolveMediaAbsolutePath(mediaRootPath, relativePath, out var path))
+        return;
+
+    if (!File.Exists(path))
+        return;
+
+    try
+    {
+        File.Delete(path);
+    }
+    catch
+    {
+        // Non-fatal: metadata delete already completed.
+    }
 }
 
 static async Task<IReadOnlyDictionary<string, object?>> ResolveDataSources(

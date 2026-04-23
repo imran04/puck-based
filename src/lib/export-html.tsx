@@ -1,7 +1,7 @@
 import type { Data } from "@puckeditor/core";
 import sanitizeHtml from "sanitize-html";
 import { exportedPageStyles } from "@/puck/export-styles";
-import { safeLinkUrl, safeMediaUrl } from "@/lib/url";
+import { resolveMediaSource, safeLinkUrl, safeMediaUrl } from "@/lib/url";
 import {
   defaultFormProps,
   fieldClassName,
@@ -408,7 +408,10 @@ function renderComponent(item: PuckItem): string {
     }
 
     case "ImageBlock": {
-      const src = safeMediaUrl(String(props.src || ""));
+      const src = resolveMediaSource({
+        assetId: String(props.assetId || ""),
+        src: String(props.src || ""),
+      });
       return `<figure class="pb-image pb-image--${escapeHtml(String(props.aspect || "wide"))}">
   ${
     src

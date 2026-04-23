@@ -284,22 +284,14 @@ export async function writePage(page: StoredPage) {
 
 export async function publishPage(pageId: string, data: Data, bundle?: TemplateBundle) {
   const existing = await readOrCreatePage(pageId);
-  const now = new Date().toISOString();
   const normalizedData = normalizeData(data);
   const title = pageTitle(normalizedData, existing.title);
-  const nextPage: StoredPage = {
-    ...existing,
-    title,
-    draft: normalizedData,
-    published: normalizedData,
-    updatedAt: now,
-    publishedAt: now,
-  };
-
-  await writePage(nextPage);
   const apiPage = await publishApiPage(pageId, title, normalizedData, bundle);
   if (!apiPage) {
     throw new Error("Publish did not complete on Builder API.");
   }
-  return nextPage;
+
+  const publishedPage = apiPageToStoredPage(apiPage);
+  await writePage(publishedPage);
+  return publishedPage;
 }

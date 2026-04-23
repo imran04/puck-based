@@ -89,6 +89,69 @@ Safe fallback:
 
 ---
 
+## Saved Section Datasource Namespacing + Query Budget (Documented, Pending Implementation)
+
+### 1) Saved section metadata persistence
+
+If a section is saved to library and it has datasource configuration, the saved snapshot must keep that datasource metadata (definition + bindings), so the section can be reused with its data behavior intact.
+
+### 2) Section-scoped ViewBag naming convention
+
+Section-level datasource bindings should resolve under:
+
+```text
+ViewBag.<sectionNameSanitized>_<dataSourceNameSanitized>
+```
+
+Access intent:
+
+- single source: `@ViewBag.<section>_<source>["property"]`
+- list source: `@ViewBag.<section>_<source>[index]["property"]`
+
+### 3) Sanitization rules for ViewBag-safe names
+
+For both section name and datasource name:
+
+- spaces and unsupported chars => `_`
+- collapse repeated `_`
+- trim leading/trailing `_`
+- if identifier starts with a digit, prefix `_`
+- if empty after sanitize, fallback to `section` / `source`
+
+### 4) Smart aliasing (opt-in only)
+
+If a section datasource and a page datasource are semantically identical, aliasing may reuse the same query result, but **only when user opt-in is enabled**.
+
+Without opt-in aliasing, queries remain isolated even if equivalent.
+
+### 5) Editor performance diagnostics
+
+Builder should show estimated datasource query pressure for current page with color coding:
+
+- green: low load
+- amber: moderate load
+- red: **more than 15 queries**
+
+The diagnostics panel should make potential DB pressure visible before publish.
+
+### 6) DSL/perf planner requirement
+
+Planner should fingerprint datasource definitions (table, filters, sort/order, query type, limit, etc.) and dedupe only through opt-in aliasing.
+
+Even when aliased, section-level ViewBag keys must still follow section namespace naming, and map to the aliased result safely.
+
+### 7) Example namespace outputs
+
+```text
+Section: "Hero Banner", Source: "Product Feed"
+=> ViewBag.Hero_Banner_Product_Feed
+
+Section: "123 Promo", Source: "main-items"
+=> ViewBag._123_Promo_main_items
+```
+
+---
+
 ## Conditional Block (Implemented)
 
 Implemented as `ConditionalSwitch` in the Puck editor and publish pipeline.
@@ -259,6 +322,108 @@ GET /api/forms/options?pageId=...&formId=...&fieldName=...&parentValue=...
 ```
 
 The endpoint should resolve the published form metadata, validate that the requested field has an allowed datasource option source, apply the cascade filter, and return safe `{ value, label }` options.
+
+---
+
+## Filesystem-Based Media Management (Planned, Approved Direction)
+
+Goal: use a first-party, filesystem-based media system so behavior is the same in local and production.
+
+### Why this direction
+
+- No third-party DAM dependency
+- Local and production workflows stay identical
+- Full control over metadata, URL shape, and publish behavior
+
+### Scope
+
+- Single media library UI integrated in builder
+- Files stored on server filesystem (configurable root path)
+- Metadata stored in DB for fast search/filter and usage tracking
+- Publish/render use same media URLs and transformation pipeline
+
+### Storage layout (proposed)
+
+```text
+{MediaRoot}/
+  originals/{yyyy}/{MM}/{assetId}_{safeFileName}
+  variants/{assetId}/{preset}.{ext}
+  temp/{upload-session}/...
+```
+
+`MediaRoot` will come from config (`appsettings.*.json`) so local and prod can point to different absolute paths while using identical logic.
+
+### Data model (proposed)
+
+`MediaAsset`
+- `Id (guid)`
+- `OriginalFileName`
+- `StoredFileName`
+- `RelativePath`
+- `MimeType`
+- `SizeBytes`
+- `Width`, `Height` (nullable)
+- `HashSha256`
+- `AltText`, `Caption`, `TagsJson`
+- `CreatedAt`, `UpdatedAt`
+
+`MediaUsage`
+- `Id (guid)`
+- `AssetId (guid)`
+- `PageId`
+- `ComponentType`
+- `ComponentPath`
+- `FieldName`
+- `LastSeenAt`
+
+### API plan (ASP.NET)
+
+- `POST /api/media/upload` — upload one or many files
+- `GET /api/media` — list/search assets (paging, filters)
+- `GET /api/media/{id}` — asset detail
+- `PATCH /api/media/{id}` — update metadata (`alt`, `caption`, `tags`)
+- `DELETE /api/media/{id}` — delete asset (blocked if in-use unless force)
+- `GET /media/{id}` — serve original (or redirect)
+- `GET /media/{id}/{preset}` — serve generated variant (`thumb`, `card`, `hero`, etc.)
+
+### Builder integration plan
+
+- Add Media Library modal in editor:
+  - upload
+  - search
+  - folder/tag filters (folders optional in phase 2)
+  - select/replace image
+- Image-capable components store `assetId` instead of raw external URL
+- Add image field helper: resolves `assetId -> media URL` for preview and export
+
+### Publish/render integration plan
+
+- Published HTML should use stable first-party media URLs:
+  - `/media/{id}` or `/media/{id}/{preset}`
+- Render endpoint keeps existing output path; only image URL generation changes
+- Exported HTML can include absolute URLs using configured public origin
+
+### Security and reliability plan
+
+- Allow-list MIME types and max file size
+- Virus scan hook point (optional adapter)
+- Safe file names + path traversal protection
+- Strong cache headers + ETag for media responses
+- Background variant generation + on-demand fallback
+- Dedup support using `HashSha256` (phase 2)
+
+### Rollout phases
+
+1. **Phase 1 (MVP):** upload/list/select/delete, DB metadata, serve originals
+2. **Phase 2:** responsive variants + presets + metadata edit (`alt/caption/tags`)
+3. **Phase 3:** usage tracking, safe delete checks, where-used panel
+4. **Phase 4:** folder organization, bulk actions, dedup, replace-with-version
+
+### Non-goals for phase 1
+
+- Cloud object storage
+- External DAM connectors
+- AI tagging or OCR
 
 ---
 

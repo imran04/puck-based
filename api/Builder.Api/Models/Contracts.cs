@@ -163,3 +163,60 @@ public sealed record PublishPageRequest(
     string? DataSourceMapJson,
     string? RazorTemplate,
     string? CsharpSource);
+
+// ── Media ───────────────────────────────────────────────────────────────────
+
+public sealed record UpdateMediaAssetRequest(
+    string? AltText,
+    string? Caption,
+    string[]? Tags);
+
+public sealed record MediaAssetDto(
+    Guid Id,
+    string OriginalFileName,
+    string StoredFileName,
+    string RelativePath,
+    string MimeType,
+    long SizeBytes,
+    int? Width,
+    int? Height,
+    string? HashSha256,
+    string? AltText,
+    string? Caption,
+    string[] Tags,
+    string Url,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt)
+{
+    public static MediaAssetDto FromEntity(MediaAsset asset) => new(
+        asset.Id,
+        asset.OriginalFileName,
+        asset.StoredFileName,
+        asset.RelativePath,
+        asset.MimeType,
+        asset.SizeBytes,
+        asset.Width,
+        asset.Height,
+        asset.HashSha256,
+        asset.AltText,
+        asset.Caption,
+        ParseTags(asset.TagsJson),
+        $"/media/{asset.Id:D}",
+        asset.CreatedAt,
+        asset.UpdatedAt);
+
+    private static string[] ParseTags(string? tagsJson)
+    {
+        if (string.IsNullOrWhiteSpace(tagsJson))
+            return [];
+
+        try
+        {
+            return JsonSerializer.Deserialize<string[]>(tagsJson) ?? [];
+        }
+        catch
+        {
+            return [];
+        }
+    }
+}

@@ -1,4 +1,4 @@
-import { ArrowRight, Download, Eye, FilePlus2, LayoutTemplate, Database, Cpu } from "lucide-react";
+import { ArrowRight, Download, Eye, FileCode2, FilePlus2, LayoutTemplate, Database, Cpu } from "lucide-react";
 import Link from "next/link";
 import { listPages } from "@/lib/page-store";
 
@@ -77,9 +77,15 @@ export default async function Home() {
           </div>
 
           <div className="overflow-hidden rounded-lg border border-[#d9dee5] bg-white">
+            <div className="hidden border-b border-[#d9dee5] bg-[#f8fafc] px-4 py-2 md:grid md:grid-cols-[minmax(0,1fr)_260px_140px_300px] md:items-center">
+              <span className="text-xs font-black uppercase text-[#5f6368]">Page</span>
+              <span className="text-xs font-black uppercase text-[#5f6368]">Status</span>
+              <span className="text-xs font-black uppercase text-[#5f6368]">CSHTML</span>
+              <span className="text-xs font-black uppercase text-[#5f6368]">Actions</span>
+            </div>
             {pages.map((page) => (
               <article
-                className="grid gap-4 border-b border-[#d9dee5] p-4 last:border-b-0 md:grid-cols-[1fr_auto] md:items-center"
+                className="grid gap-4 border-b border-[#d9dee5] p-4 last:border-b-0 md:grid-cols-[minmax(0,1fr)_260px_140px_300px] md:items-center"
                 key={page.id}
               >
                 <div className="min-w-0">
@@ -89,9 +95,23 @@ export default async function Home() {
                       /{page.slug}
                     </span>
                   </div>
-                  <p className="mt-2 text-sm font-medium text-[#5f6368]">
-                    Updated {formatDate(page.updatedAt)} · Published {formatDate(page.publishedAt)}
-                  </p>
+                </div>
+
+                <p className="text-sm font-medium text-[#5f6368]">
+                  Updated {formatDate(page.updatedAt)}
+                  <br />
+                  Published {formatDate(page.publishedAt)}
+                </p>
+
+                <div className="flex md:justify-center">
+                  <a
+                    className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-[#d9dee5] px-3 text-sm font-black"
+                    href={`/api/pages/${page.id}/cshtml`}
+                    target="_blank"
+                  >
+                    <FileCode2 size={16} />
+                    View
+                  </a>
                 </div>
 
                 <div className="flex flex-wrap gap-2">

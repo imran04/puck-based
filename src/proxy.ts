@@ -16,6 +16,7 @@ export function proxy(request: NextRequest) {
     pathname.startsWith("/builder") ||
     pathname === "/api/pages" ||
     pathname.startsWith("/api/custom-blocks") ||
+    pathname.startsWith("/api/media") ||
     isProtectedWrite(pathname);
 
   if (!needsAuth) {
@@ -52,5 +53,7 @@ export const config = {
     "/api/pages/:path*",
     "/api/custom-blocks",
     "/api/custom-blocks/:path*",
+    "/api/media",
+    "/api/media/:path*",
   ],
 };
