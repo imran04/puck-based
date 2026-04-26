@@ -25,6 +25,8 @@ public sealed class BuilderDbContext(DbContextOptions<BuilderDbContext> options)
             entity.Property(p => p.Slug).HasMaxLength(256);
             entity.Property(p => p.DraftJson).HasColumnType("nvarchar(max)");
             entity.Property(p => p.PublishedJson).HasColumnType("nvarchar(max)");
+            entity.Property(p => p.Status).HasConversion<int>().HasDefaultValue(PageLifecycleStatus.Draft);
+            entity.Property(p => p.IsCompiled).HasDefaultValue(false);
             entity.Property(p => p.DataSourceMapJson).HasColumnType("nvarchar(max)");
             entity.Property(p => p.RazorTemplate).HasColumnType("nvarchar(max)");
             entity.Property(p => p.CompiledAssemblyBytes).HasColumnType("varbinary(max)");

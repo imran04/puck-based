@@ -5,7 +5,7 @@
 1. **Dynamic tables with relations** — users can create custom tables with typed columns and define 1:1, 1:N, N:N relations between them
 2. **Tables as datasources in the page editor** — each page can configure named datasources (single record, list) with filters; components can bind their text fields to datasource fields via `{DS:source.field}` markers
 3. **Publish → Razor artifact + compiled binary** — on publish, placeholders transform to `@ViewBag` syntax (CSHTML stored in DB), and a C# renderer class is compiled with Roslyn to assembly bytes (also stored in DB), plus a datasource map JSON
-4. **Runtime render controller** — `GET /api/pages/{id}/render` resolves datasource queries, populates a ViewBag dictionary, loads the compiled assembly, and returns rendered HTML
+4. **Runtime render controller** — `GET/POST /api/pages/{id}/render` resolves datasource queries, populates a ViewBag dictionary, loads the compiled assembly, and returns rendered HTML
 
 ---
 
@@ -86,6 +86,38 @@ Safe fallback:
 - unknown pipes are ignored
 - invalid args do not throw; value falls back to current string value
 - missing datasource/property resolves to empty string as before
+
+---
+
+## Datasource Runtime Inputs (Implemented)
+
+Display datasource filters now support dynamic input values from request query/body during runtime render.
+
+### Filter config
+
+Each filter can now define:
+
+- `valueSource`: `static` | `query` | `body`
+- `value`: static literal value
+- `valueKey`: key used when source is `query` or `body`
+- `required`: `true`/`false`
+- `nullMode`: `skip-filter` | `empty-string` | `match-null`
+
+### Runtime behavior
+
+`/api/pages/{id}/render` accepts both:
+
+- `GET` with querystring inputs
+- `POST` with JSON/form body inputs (search payload)
+
+When a dynamic input is missing:
+
+- `required=true`: datasource is short-circuited (returns no rows)
+- `required=false` + `nullMode=skip-filter`: ignore the filter
+- `required=false` + `nullMode=empty-string`: apply filter with empty string
+- `required=false` + `nullMode=match-null`: match null/empty row values (`neq` inverts this)
+
+This allows datasources to be configured as optional or mandatory request-driven queries without forcing one global behavior.
 
 ---
 

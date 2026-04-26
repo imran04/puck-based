@@ -568,6 +568,22 @@ a {
   text-align: center;
 }
 
+.pb-foreach {
+  display: grid;
+  gap: 12px;
+  border: 1px dashed #bdd3f9;
+  border-radius: 8px;
+  background: #f8fbff;
+  padding: 14px;
+}
+
+.pb-foreach__meta {
+  margin: 0;
+  color: var(--pb-muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
 .pb-conditional {
   display: grid;
   gap: 10px;

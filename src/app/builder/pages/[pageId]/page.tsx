@@ -21,8 +21,12 @@ export default async function BuilderPage({
         title: item.title,
         slug: item.slug,
         publishedAt: item.publishedAt,
+        status: item.status,
+        isCompiled: item.isCompiled,
       }))}
       publishedAt={page.publishedAt}
+      pageStatus={page.status}
+      isCompiled={page.isCompiled}
     />
   );
 }

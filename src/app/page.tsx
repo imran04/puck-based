@@ -106,7 +106,7 @@ export default async function Home() {
                 <div className="flex md:justify-center">
                   <a
                     className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-[#d9dee5] px-3 text-sm font-black"
-                    href={`/api/pages/${page.id}/cshtml`}
+                    href={`/builder/pages/${page.id}/cshtml`}
                     target="_blank"
                   >
                     <FileCode2 size={16} />

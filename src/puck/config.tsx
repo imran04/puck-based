@@ -302,7 +302,7 @@ function textLines(value: string) {
 
 // ── Datasource field helpers ───────────────────────────────────────────────
 
-function dataSourceManagerField(kind: "display" | "sink") {
+function dataSourceManagerField(kind: "display" | "sink", scope: "page" | "section" = "page") {
   return {
     type: "custom" as const,
     label: kind === "display" ? "Display datasources" : "Sink datasources",
@@ -312,7 +312,7 @@ function dataSourceManagerField(kind: "display" | "sink") {
     }: {
       value?: DataSourceDefinition[];
       onChange: (v: DataSourceDefinition[]) => void;
-    }) => <DataSourceManager kind={kind} onChange={onChange} value={value} />,
+    }) => <DataSourceManager kind={kind} onChange={onChange} scope={scope} value={value} />,
   };
 }
 
@@ -388,6 +388,12 @@ type DynamicListProps = {
   layout: "cards" | "table" | "list";
 };
 
+type ForEachProps = {
+  source: string;
+  objectName: string;
+  content: Slot;
+};
+
 type ConditionalSwitchProps = {
   condition: ConditionalRule;
   whenTrue: Slot;
@@ -454,6 +460,7 @@ export const puckConfig: Config = {
         "Heading",
         "RichText",
         "FeatureCard",
+        "ForEach",
         "DynamicList",
         "ConditionalSwitch",
         "ButtonLink",
@@ -606,6 +613,7 @@ export const puckConfig: Config = {
             { label: "Right", value: "right" },
           ],
         },
+        sectionSources: dataSourceManagerField("display", "section"),
         content: { type: "slot" },
       },
       defaultProps: {
@@ -613,6 +621,7 @@ export const puckConfig: Config = {
         padding: "normal",
         width: "standard",
         align: "left",
+        sectionSources: [],
         content: [
           {
             type: "Heading",
@@ -1688,6 +1697,56 @@ export const puckConfig: Config = {
               ))
             )}
           </div>
+        );
+      },
+    },
+    ForEach: {
+      label: "For each",
+      fields: {
+        source: {
+          type: "text",
+          label: "List datasource name",
+        },
+        objectName: {
+          type: "text",
+          label: "Row object name",
+        },
+        content: { type: "slot" },
+      },
+      defaultProps: {
+        source: "",
+        objectName: "item",
+        content: [
+          {
+            type: "FeatureCard",
+            props: {
+              title: "Bind title to a list datasource field",
+              body: "Each row will repeat this content at runtime.",
+              _dsBindings: {
+                title: { source: "item", field: "title" },
+                body: { source: "item", field: "description" },
+              },
+            },
+          },
+        ],
+      },
+      render: (props) => {
+        const { source, objectName, content: Content } = asProps<ForEachProps>(props);
+        if (!source) {
+          return (
+            <div className="pb-empty-state">
+              Configure a list datasource name for this ForEach block.
+            </div>
+          );
+        }
+
+        return (
+          <section className="pb-foreach">
+            <p className="pb-foreach__meta">
+              For each <strong>{objectName || "item"}</strong> in <strong>{source}</strong>
+            </p>
+            <Content />
+          </section>
         );
       },
     },

@@ -12,8 +12,10 @@
     "postinstall": "patch-package"
   },
   "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
     "@puckeditor/core": "^0.21.2",
     "lucide-react": "^1.8.0",
+    "monaco-editor": "^0.55.1",
     "next": "16.2.4",
     "react": "19.2.4",
     "react-dom": "19.2.4",

@@ -13,6 +13,15 @@
 
 import type { Data } from "@puckeditor/core";
 import {
+  buildQueryPlan,
+  buildSectionSourceAliasMap,
+  collectSectionScopedSourcesFromItems,
+  remapMergeTagSourcesInHtml,
+  sanitizeViewBagSegment,
+  type QueryableDataSource,
+} from "@/lib/datasource-query-plan";
+import { getDisplaySourcesFromRootProps } from "@/lib/datasource-roots";
+import {
   defaultFormProps,
   fieldClassName,
   fieldsClassName,
@@ -27,10 +36,17 @@ import {
 } from "@/puck/form-schema";
 import { resolveMediaSource, safeMediaUrl } from "@/lib/url";
 
+export type DataSourceFilterValueSource = "static" | "query" | "body";
+export type DataSourceFilterNullMode = "skip-filter" | "empty-string" | "match-null";
+
 export type DataSourceFilter = {
   field: string;
   op: "eq" | "neq" | "contains" | "gt" | "lt";
   value: string;
+  valueSource?: DataSourceFilterValueSource;
+  valueKey?: string;
+  required?: boolean;
+  nullMode?: DataSourceFilterNullMode;
 };
 
 export type DataSourceDefinition = {
@@ -43,6 +59,7 @@ export type DataSourceDefinition = {
   orderBy?: string;
   orderDir?: "asc" | "desc";
   limit?: number;
+  aliasWithPageSource?: boolean;
 };
 
 export type DsBinding = {
@@ -102,9 +119,84 @@ function dsIndexedPipedMarker(
 }
 
 /** Returns the fallback or the marker if a binding exists */
-function bindOrFallback(bindings: DsBindings | undefined, propName: string, fallback: string): string {
+function resolveAliasedSourceName(sourceName: string, context: RenderContext): string {
+  if (!sourceName) {
+    return sourceName;
+  }
+
+  const aliases = context.sourceAliases ?? {};
+  const direct = aliases[sourceName];
+  if (direct) {
+    return direct;
+  }
+
+  const hit = Object.entries(aliases).find(([key]) => key.toLowerCase() === sourceName.toLowerCase());
+  return hit ? hit[1] : sourceName;
+}
+
+function equalsIgnoreCase(a: string, b: string): boolean {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+function resolveLoopAwareSourceName(sourceName: string, context: RenderContext): string {
+  const resolved = resolveAliasedSourceName(sourceName, context);
+  if (!context.loopSource) {
+    return resolved;
+  }
+
+  if (equalsIgnoreCase(resolved, context.loopSource)) {
+    return context.loopSource;
+  }
+
+  if (context.loopObjectName && equalsIgnoreCase(sourceName, context.loopObjectName)) {
+    return context.loopSource;
+  }
+
+  if (context.loopObjectName && equalsIgnoreCase(resolved, context.loopObjectName)) {
+    return context.loopSource;
+  }
+
+  return resolved;
+}
+
+function bindOrFallback(
+  bindings: DsBindings | undefined,
+  propName: string,
+  fallback: string,
+  context: RenderContext = defaultRenderContext,
+): string {
   const b = bindings?.[propName];
-  return b ? dsMarker(b.source, b.field) : fallback;
+  if (!b) {
+    return fallback;
+  }
+
+  const source = resolveLoopAwareSourceName(b.source, context);
+  if (context.loopSource && source.toLowerCase() === context.loopSource.toLowerCase()) {
+    return dsIndexedMarker(context.loopSource, "index", b.field);
+  }
+
+  return dsMarker(source, b.field);
+}
+
+function toQueryableSource(value: Partial<QueryableDataSource>): QueryableDataSource | null {
+  const rawName = String(value.name || "").trim();
+  const tableId = String(value.tableId || "").trim();
+  if (!rawName || !tableId) {
+    return null;
+  }
+
+  return {
+    id: String(value.id || `${rawName}_${tableId}`),
+    name: rawName,
+    tableId,
+    tableName: String(value.tableName || ""),
+    queryType: value.queryType === "list" ? "list" : "single",
+    filters: Array.isArray(value.filters) ? (value.filters as DataSourceFilter[]) : [],
+    orderBy: value.orderBy ? String(value.orderBy) : undefined,
+    orderDir: value.orderDir === "desc" ? "desc" : "asc",
+    limit: typeof value.limit === "number" ? value.limit : undefined,
+    aliasWithPageSource: Boolean(value.aliasWithPageSource),
+  };
 }
 
 // ── Component HTML with marker substitution ────────────────────────────────
@@ -114,6 +206,9 @@ type PuckItem = { type: string; props?: Record<string, unknown> };
 type RenderContext = {
   pageId: string;
   pageSlug: string;
+  sourceAliases?: Record<string, string>;
+  loopSource?: string;
+  loopObjectName?: string;
 };
 
 const defaultRenderContext: RenderContext = {
@@ -316,6 +411,89 @@ function convertMergeTagsToDataSourceMarkers(
   });
 }
 
+function isLoopReference(sourceName: string, context: RenderContext): boolean {
+  if (!context.loopSource) {
+    return false;
+  }
+
+  const source = sourceName.trim();
+  if (!source) {
+    return false;
+  }
+
+  if (equalsIgnoreCase(source, context.loopSource)) {
+    return true;
+  }
+
+  if (context.loopObjectName && equalsIgnoreCase(source, context.loopObjectName)) {
+    return true;
+  }
+
+  return false;
+}
+
+function convertLoopMergeTagsToDataSourceMarkers(
+  html: string,
+  context: RenderContext,
+): string {
+  const loopSource = context.loopSource;
+  if (!html.includes("{{") || !loopSource) {
+    return html;
+  }
+
+  return html.replace(mergeTokenPattern, (token, rawExpression) => {
+    const expression = String(rawExpression || "").trim();
+    const { pathExpression, pipeOps } = parseMergeExpression(expression);
+    const encodedPipes = pipeOps.length > 0 ? encodePipeOperations(pipeOps) : "";
+
+    const indexedMatch = pathExpression.match(indexedSourcePathPattern);
+    if (indexedMatch) {
+      const [, sourceName, indexToken, fieldName] = indexedMatch;
+      if (!isLoopReference(sourceName, context)) {
+        return token;
+      }
+
+      return encodedPipes
+        ? dsIndexedPipedMarker(loopSource, indexToken, fieldName, encodedPipes)
+        : dsIndexedMarker(loopSource, indexToken, fieldName);
+    }
+
+    const indexedSourceOnlyMatch = pathExpression.match(indexedSourceOnlyPattern);
+    if (indexedSourceOnlyMatch) {
+      const [, sourceName, indexToken] = indexedSourceOnlyMatch;
+      if (!isLoopReference(sourceName, context) || !encodedPipes) {
+        return token;
+      }
+
+      return dsIndexedPipedMarker(loopSource, indexToken, "*", encodedPipes);
+    }
+
+    const sourcePathMatch = pathExpression.match(singleSourcePathPattern);
+    if (sourcePathMatch) {
+      const [, sourceName, fieldName] = sourcePathMatch;
+      if (!isLoopReference(sourceName, context)) {
+        return token;
+      }
+
+      return encodedPipes
+        ? dsIndexedPipedMarker(loopSource, "index", fieldName, encodedPipes)
+        : dsIndexedMarker(loopSource, "index", fieldName);
+    }
+
+    const sourceOnlyMatch = pathExpression.match(sourceOnlyPattern);
+    if (sourceOnlyMatch) {
+      const [, sourceName] = sourceOnlyMatch;
+      if (!isLoopReference(sourceName, context) || !encodedPipes) {
+        return token;
+      }
+
+      return dsIndexedPipedMarker(loopSource, "index", "*", encodedPipes);
+    }
+
+    return token;
+  });
+}
+
 function sanitizeCsharpIdentifier(value: string) {
   const normalized = String(value || "").replace(/[^A-Za-z0-9_]/g, "_");
   if (!normalized) {
@@ -427,9 +605,10 @@ function renderSelectDataAttributes(
   if (!isCompleteOptionSource(source)) {
     return "";
   }
+  const sourceName = resolveAliasedSourceName(source.source, context);
 
   const attrs = [
-    ` data-pb-option-source="${escHtml(source.source)}"`,
+    ` data-pb-option-source="${escHtml(sourceName)}"`,
     ` data-pb-field-name="${escHtml(name)}"`,
     ` data-pb-form-id="${escHtml(formId)}"`,
     ` data-pb-page-id="${escHtml(context.pageId)}"`,
@@ -443,7 +622,7 @@ function renderSelectDataAttributes(
   return attrs.join("");
 }
 
-function renderRuntimeSelectOptions(field: FormField) {
+function renderRuntimeSelectOptions(field: FormField, context: RenderContext) {
   const source = field.optionSource;
 
   if (!isCompleteOptionSource(source)) {
@@ -455,7 +634,7 @@ function renderRuntimeSelectOptions(field: FormField) {
   }
 
   return dsOptionsMarker(
-    source.source,
+    resolveAliasedSourceName(source.source, context),
     source.valueField,
     source.labelField,
     field.defaultValue || "",
@@ -506,7 +685,7 @@ function renderRuntimeFormField(
     const hasCascade = Boolean(source?.cascade?.parentField && source.cascade.parentValueColumn);
     const disabled = hasCascade ? " disabled" : "";
     const dataAttrs = renderSelectDataAttributes(field, name, formId, context);
-    const options = renderRuntimeSelectOptions(field);
+    const options = renderRuntimeSelectOptions(field, context);
 
     return `<label class="${className}" for="${id}">
   <span class="pb-label">${label}${required ? " *" : ""}</span>
@@ -608,47 +787,64 @@ function renderItemWithMarkers(
 
   switch (item.type) {
     case "Hero": {
-      const title   = bindOrFallback(bindings, "title",   escHtml(String(props.title || "")));
-      const body    = bindOrFallback(bindings, "body",    escHtml(String(props.body || "")));
-      const eyebrow = bindOrFallback(bindings, "eyebrow", escHtml(String(props.eyebrow || "")));
+      const title   = bindOrFallback(bindings, "title",   escHtml(String(props.title || "")), context);
+      const body    = bindOrFallback(bindings, "body",    escHtml(String(props.body || "")), context);
+      const eyebrow = bindOrFallback(bindings, "eyebrow", escHtml(String(props.eyebrow || "")), context);
       const tone = props.tone === "dark" ? "pb-hero pb-hero--dark" : "pb-hero";
       return `<section class="${tone}"><div class="pb-container pb-hero__grid"><div>${eyebrow ? `<p class="pb-eyebrow">${eyebrow}</p>` : ""}<h1 class="pb-title">${title}</h1>${body ? `<p class="pb-copy">${body}</p>` : ""}</div><div aria-hidden="true" class="pb-visual"></div></div></section>`;
     }
 
     case "Heading": {
-      const text = bindOrFallback(bindings, "text", escHtml(String(props.text || "")));
+      const text = bindOrFallback(bindings, "text", escHtml(String(props.text || "")), context);
       const tag = props.level === "h3" ? "h3" : "h2";
       return `<${tag} class="pb-heading">${text}</${tag}>`;
     }
 
     case "RichText": {
-      const text = bindOrFallback(bindings, "text", String(props.text || ""));
+      const text = bindOrFallback(bindings, "text", String(props.text || ""), context);
       return `<div class="pb-rich-text">${text}</div>`;
     }
 
     case "FeatureCard": {
-      const title = bindOrFallback(bindings, "title", escHtml(String(props.title || "")));
-      const body  = bindOrFallback(bindings, "body",  escHtml(String(props.body || "")));
+      const title = bindOrFallback(bindings, "title", escHtml(String(props.title || "")), context);
+      const body  = bindOrFallback(bindings, "body",  escHtml(String(props.body || "")), context);
       return `<article class="pb-card"><h3 class="pb-card__title">${title}</h3><p class="pb-card__body">${body}</p></article>`;
     }
 
     case "QuoteBlock": {
-      const quote  = bindOrFallback(bindings, "quote",  escHtml(String(props.quote || "")));
-      const author = bindOrFallback(bindings, "author", escHtml(String(props.author || "")));
-      const role   = bindOrFallback(bindings, "role",   escHtml(String(props.role || "")));
+      const quote  = bindOrFallback(bindings, "quote",  escHtml(String(props.quote || "")), context);
+      const author = bindOrFallback(bindings, "author", escHtml(String(props.author || "")), context);
+      const role   = bindOrFallback(bindings, "role",   escHtml(String(props.role || "")), context);
       return `<figure class="pb-quote"><blockquote>${quote}</blockquote><figcaption>${author ? `<strong>${author}</strong>` : ""}${role ? `<span>${role}</span>` : ""}</figcaption></figure>`;
     }
 
     case "Callout": {
-      const title = bindOrFallback(bindings, "title", escHtml(String(props.title || "")));
-      const body  = bindOrFallback(bindings, "body",  escHtml(String(props.body || "")));
+      const title = bindOrFallback(bindings, "title", escHtml(String(props.title || "")), context);
+      const body  = bindOrFallback(bindings, "body",  escHtml(String(props.body || "")), context);
       const tone  = String(props.tone || "info");
       return `<aside class="pb-callout pb-callout--${escHtml(tone)}"><strong>${title}</strong><p>${body}</p></aside>`;
     }
 
+    case "ForEach": {
+      const source = resolveAliasedSourceName(String(props.source || ""), context);
+      const objectName = String(props.objectName || "item").trim() || "item";
+      if (!source) {
+        return `<div class="pb-empty-state">Configure a datasource for this for-each block.</div>`;
+      }
+
+      const loopContext: RenderContext = {
+        ...context,
+        loopSource: source,
+        loopObjectName: objectName,
+      };
+      const rawContent = renderItemsWithMarkers((props.content as PuckItem[]) ?? [], loopContext);
+      const content = convertLoopMergeTagsToDataSourceMarkers(rawContent, loopContext);
+      return `<section class="pb-foreach"><p class="pb-foreach__meta">For each <strong>${escHtml(objectName)}</strong> in <strong>${escHtml(source)}</strong></p>{DS_LIST_START:${sanitizeMarkerPart(source)}}${content}{DS_LIST_END}</section>`;
+    }
+
     case "DynamicList": {
       // List iteration component
-      const source   = String(props.source || "");
+      const source   = resolveAliasedSourceName(String(props.source || ""), context);
       const layout   = String(props.layout || "cards");
       const titleFld = String(props.titleField || "title");
       const bodyFld  = String(props.bodyField || "body");
@@ -669,7 +865,7 @@ function renderItemWithMarkers(
 
     case "ConditionalSwitch": {
       const condition = (props.condition as Partial<ConditionalRule> | undefined) ?? {};
-      const source = String(condition.source || "");
+      const source = resolveAliasedSourceName(String(condition.source || ""), context);
       const predicate = sanitizePredicateMarker(String(condition.predicate || ""));
       const whenTrue = renderItemsWithMarkers((props.whenTrue as PuckItem[]) ?? [], context);
       const whenFalse = renderItemsWithMarkers((props.whenFalse as PuckItem[]) ?? [], context);
@@ -682,7 +878,22 @@ function renderItemWithMarkers(
     }
 
     case "Section": {
-      const inner = renderItemsWithMarkers((props.content as PuckItem[]) ?? [], context);
+      const sectionSources = Array.isArray(props.sectionSources)
+        ? ((props.sectionSources as Partial<QueryableDataSource>[]).map(toQueryableSource).filter((value): value is QueryableDataSource => Boolean(value)))
+        : [];
+      const sectionName = String(props._instanceName || props.id || "section");
+      const sectionAliases = buildSectionSourceAliasMap(sectionName, sectionSources);
+      const nextContext: RenderContext = {
+        ...context,
+        sourceAliases: {
+          ...(context.sourceAliases ?? {}),
+          ...sectionAliases,
+        },
+      };
+      const inner = remapMergeTagSourcesInHtml(
+        renderItemsWithMarkers((props.content as PuckItem[]) ?? [], nextContext),
+        sectionAliases,
+      );
       const tone = String(props.tone || "white");
       const padding = String(props.padding || "normal");
       const cls = ["pb-section", tone === "soft" ? "pb-section--soft" : "", tone === "dark" ? "pb-section--dark" : "", `pb-section--${padding}`].filter(Boolean).join(" ");
@@ -735,8 +946,8 @@ function renderItemWithMarkers(
       return `<hr class="pb-section-divider pb-section-divider--${escHtml(String(props.tone || "light"))}" />`;
 
     case "ButtonLink": {
-      const label = bindOrFallback(bindings, "label", escHtml(String(props.label || "Continue")));
-      const href  = bindOrFallback(bindings, "href",  escHtml(String(props.href || "#")));
+      const label = bindOrFallback(bindings, "label", escHtml(String(props.label || "Continue")), context);
+      const href  = bindOrFallback(bindings, "href",  escHtml(String(props.href || "#")), context);
       const cls   = props.variant === "secondary" ? "pb-button pb-button--secondary" : "pb-button";
       return `<a class="${cls}" href="${href}">${label}</a>`;
     }
@@ -789,9 +1000,9 @@ function renderItemWithMarkers(
     }
 
     case "Testimonial": {
-      const quote = bindOrFallback(bindings, "quote", escHtml(String(props.quote || "")));
-      const name  = bindOrFallback(bindings, "name",  escHtml(String(props.name || "")));
-      const role  = bindOrFallback(bindings, "role",  escHtml(String(props.role || "")));
+      const quote = bindOrFallback(bindings, "quote", escHtml(String(props.quote || "")), context);
+      const name  = bindOrFallback(bindings, "name",  escHtml(String(props.name || "")), context);
+      const role  = bindOrFallback(bindings, "role",  escHtml(String(props.role || "")), context);
       const avatar = safeMediaUrl(String(props.avatarUrl || ""));
       return `<article class="pb-testimonial">
   <p>${quote}</p>
@@ -1568,8 +1779,6 @@ public static class PageRenderer
 }
 
 // ── Public entry point ─────────────────────────────────────────────────────
-
-import { getDisplaySourcesFromRootProps } from "@/lib/datasource-roots";
 import { exportedPageStyles } from "@/puck/export-styles";
 
 export type TemplateBundle = {
@@ -1583,16 +1792,37 @@ export function buildTemplateBundle(
   context: RenderContext = defaultRenderContext,
 ): TemplateBundle {
   const rootProps = (data.root as { props?: Record<string, unknown> }).props ?? {};
-  const displaySources = getDisplaySourcesFromRootProps(rootProps as Record<string, unknown>);
+  const pageSourcesRaw = getDisplaySourcesFromRootProps(rootProps as Record<string, unknown>) as QueryableDataSource[];
+  const pageSourceAliases: Record<string, string> = {};
+  const pageSources = pageSourcesRaw
+    .map((source) => toQueryableSource(source))
+    .filter((source): source is QueryableDataSource => Boolean(source))
+    .map((source) => {
+      const safeName = sanitizeViewBagSegment(source.name, "source");
+      pageSourceAliases[source.name] = safeName;
+      return {
+        ...source,
+        name: safeName,
+      };
+    });
+  const sectionSources = collectSectionScopedSourcesFromItems((data.content ?? []) as PuckItem[]);
+  const queryPlan = buildQueryPlan(pageSources, sectionSources);
   const title = String(rootProps.title || "Page");
 
-  const markerBodyHtml = renderItemsWithMarkers(
-    (data.content ?? []) as PuckItem[],
-    context,
+  const markerBodyHtml = remapMergeTagSourcesInHtml(
+    renderItemsWithMarkers((data.content ?? []) as PuckItem[], {
+      ...context,
+      sourceAliases: {
+        ...(context.sourceAliases ?? {}),
+        ...pageSourceAliases,
+      },
+    }),
+    pageSourceAliases,
   );
-  const bodyHtml = convertMergeTagsToDataSourceMarkers(markerBodyHtml, displaySources);
+  const allSources = queryPlan.allSources as DataSourceDefinition[];
+  const bodyHtml = convertMergeTagsToDataSourceMarkers(markerBodyHtml, allSources);
 
-  const razorTemplate = buildCshtml(title, bodyHtml, exportedPageStyles, displaySources);
+  const razorTemplate = buildCshtml(title, bodyHtml, exportedPageStyles, allSources);
 
   // The C# renderer uses the same marker-enriched body HTML (not the CSHTML)
   const rendererHtml = `<!doctype html>\n<html lang="en">\n<head>\n  <meta charset="utf-8"/>\n  <meta name="viewport" content="width=device-width,initial-scale=1"/>\n  <title>${escHtml(title)}</title>\n  <style>${exportedPageStyles}</style>\n</head>\n<body>\n${bodyHtml}\n${runtimeFormScript()}\n</body>\n</html>`;
@@ -1600,9 +1830,14 @@ export function buildTemplateBundle(
   const csharpSource = buildCsharpRenderer(rendererHtml);
 
   const dataSourceMapJson = JSON.stringify({
-    displaySources,
+    displaySources: allSources,
     // Backward-compatible alias for older API/runtime parsing.
-    dataSources: displaySources,
+    dataSources: allSources,
+    aliases: queryPlan.aliases,
+    queryBudget: {
+      estimatedQueries: queryPlan.estimatedQueries,
+      level: queryPlan.level,
+    },
   });
 
   return { razorTemplate, csharpSource, dataSourceMapJson };

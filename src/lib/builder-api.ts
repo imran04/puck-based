@@ -4,7 +4,9 @@ import type { Data } from "@puckeditor/core";
 import type { ReusableBlock, ReusableBlockInput, ReusableBlockKind } from "./reusable-blocks";
 import type { TemplateBundle } from "./datasource-template";
 
-type ApiPage = {
+export type ApiPageStatus = "draft" | "published" | "archived" | "deleted";
+
+export type ApiPage = {
   id: string;
   title: string;
   slug: string;
@@ -13,6 +15,8 @@ type ApiPage = {
   createdAt: string;
   updatedAt: string;
   publishedAt?: string | null;
+  status?: ApiPageStatus;
+  isCompiled?: boolean;
 };
 
 type ApiPageCshtml = {
@@ -60,6 +64,34 @@ async function builderFetch<T>(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function parseApiError(response: Response) {
+  const errorBody = await response.text();
+  let message = errorBody || `Builder API ${response.status}`;
+  let details: string | undefined;
+
+  try {
+    const parsed = JSON.parse(errorBody) as { error?: unknown; details?: unknown };
+    if (typeof parsed.error === "string" && parsed.error.trim()) {
+      message = parsed.error.trim();
+    }
+    if (typeof parsed.details === "string" && parsed.details.trim()) {
+      details = parsed.details.trim();
+    }
+  } catch {
+    // Keep raw response text as message.
+  }
+
+  const requestError = new Error(message) as Error & {
+    status?: number;
+    details?: string;
+    raw?: string;
+  };
+  requestError.status = response.status;
+  requestError.details = details;
+  requestError.raw = errorBody;
+  return requestError;
 }
 
 export async function getApiPage(pageId: string) {
@@ -111,31 +143,32 @@ export async function publishApiPage(pageId: string, title: string, data: Data, 
     });
 
     if (!response.ok) {
-      const errorBody = await response.text();
-      let message = errorBody || `Builder API ${response.status}`;
-      let details: string | undefined;
+      throw await parseApiError(response);
+    }
 
-      try {
-        const parsed = JSON.parse(errorBody) as { error?: unknown; details?: unknown };
-        if (typeof parsed.error === "string" && parsed.error.trim()) {
-          message = parsed.error.trim();
-        }
-        if (typeof parsed.details === "string" && parsed.details.trim()) {
-          details = parsed.details.trim();
-        }
-      } catch {
-        // Keep raw response text as message.
-      }
+    return (await response.json()) as ApiPage;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
-      const publishError = new Error(message) as Error & {
-        status?: number;
-        details?: string;
-        raw?: string;
-      };
-      publishError.status = response.status;
-      publishError.details = details;
-      publishError.raw = errorBody;
-      throw publishError;
+export async function updateApiPageStatus(pageId: string, status: ApiPageStatus) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 7000);
+
+  try {
+    const response = await fetch(`${apiBaseUrl}/api/pages/${encodeURIComponent(pageId)}/status`, {
+      method: "PATCH",
+      cache: "no-store",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ status }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw await parseApiError(response);
     }
 
     return (await response.json()) as ApiPage;

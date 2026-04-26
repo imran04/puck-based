@@ -21,7 +21,9 @@ public sealed record PageDto(
     JsonElement? Published,
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt,
-    DateTimeOffset? PublishedAt)
+    DateTimeOffset? PublishedAt,
+    string Status,
+    bool IsCompiled)
 {
     public static PageDto FromEntity(Page page) => new(
         page.Id,
@@ -33,7 +35,9 @@ public sealed record PageDto(
             : JsonSerializer.Deserialize<JsonElement>(page.PublishedJson),
         page.CreatedAt,
         page.UpdatedAt,
-        page.PublishedAt);
+        page.PublishedAt,
+        page.Status.ToString().ToLowerInvariant(),
+        page.IsCompiled);
 }
 
 public sealed record SaveCustomBlockRequest(
@@ -163,6 +167,8 @@ public sealed record PublishPageRequest(
     string? DataSourceMapJson,
     string? RazorTemplate,
     string? CsharpSource);
+
+public sealed record UpdatePageStatusRequest(string Status);
 
 // ── Media ───────────────────────────────────────────────────────────────────
 

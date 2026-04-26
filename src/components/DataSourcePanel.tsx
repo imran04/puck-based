@@ -19,14 +19,25 @@ async function fetchTables(): Promise<TableMeta[]> {
   }
 }
 
+function sanitizeDatasourceName(value: string, fallback = "source") {
+  const safe = String(value || "")
+    .replace(/[^A-Za-z0-9_]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const base = safe || fallback;
+  return /^\d/.test(base) ? `_${base}` : base;
+}
+
 // ── DataSourceManager – edits a datasource array field ─────────────────────
 
 export function DataSourceManager({
   kind = "display",
+  scope = "page",
   value,
   onChange,
 }: {
   kind?: "display" | "sink";
+  scope?: "page" | "section";
   value?: DataSourceDefinition[];
   onChange: (v: DataSourceDefinition[]) => void;
 }) {
@@ -41,11 +52,12 @@ export function DataSourceManager({
     const first = tables[0];
     const newDs: DataSourceDefinition = {
       id,
-      name: `${kind}_source_${sources.length + 1}`,
+      name: sanitizeDatasourceName(`${kind}_source_${sources.length + 1}`),
       tableId: first?.id ?? "",
       tableName: first?.displayName ?? "",
       queryType: "single",
       filters: [],
+      aliasWithPageSource: false,
     };
     onChange([...sources, newDs]);
     setExpanded(id);
@@ -70,7 +82,18 @@ export function DataSourceManager({
   function addFilter(index: number) {
     const src = sources[index];
     updateSource(index, {
-      filters: [...(src.filters ?? []), { field: "", op: "eq", value: "" }],
+      filters: [
+        ...(src.filters ?? []),
+        {
+          field: "",
+          op: "eq",
+          value: "",
+          valueSource: "static",
+          valueKey: "",
+          required: false,
+          nullMode: "skip-filter",
+        },
+      ],
     });
   }
 
@@ -131,7 +154,7 @@ export function DataSourceManager({
                   <span className="font-bold text-gray-600">Variable name</span>
                   <input
                     className="border border-gray-200 rounded px-2 py-1 font-mono"
-                    onChange={(e) => updateSource(idx, { name: e.target.value.replace(/\s+/g, "_") })}
+                    onChange={(e) => updateSource(idx, { name: sanitizeDatasourceName(e.target.value) })}
                     value={ds.name}
                   />
                   <span className="text-gray-400">
@@ -182,6 +205,25 @@ export function DataSourceManager({
                       </label>
                     )}
 
+                    {scope === "section" && (
+                      <label className="grid gap-1">
+                        <span className="font-bold text-gray-600">Alias optimization</span>
+                        <label className="inline-flex items-center gap-2 text-gray-700">
+                          <input
+                            checked={Boolean(ds.aliasWithPageSource)}
+                            onChange={(e) =>
+                              updateSource(idx, { aliasWithPageSource: e.currentTarget.checked })
+                            }
+                            type="checkbox"
+                          />
+                          Alias with equivalent page datasource (opt-in)
+                        </label>
+                        <span className="text-gray-400">
+                          Reuses page-query result only when table/query/filter shape matches.
+                        </span>
+                      </label>
+                    )}
+
                     <div className="space-y-1">
                       <div className="flex items-center justify-between">
                         <span className="font-bold text-gray-600">Filters</span>
@@ -194,41 +236,94 @@ export function DataSourceManager({
                         </button>
                       </div>
                       {(ds.filters ?? []).map((f, fi) => (
-                        <div className="flex gap-1 items-center" key={fi}>
-                          <select
-                            className="border border-gray-200 rounded px-1 py-1 bg-white flex-1"
-                            onChange={(e) => updateFilter(idx, fi, { field: e.target.value })}
-                            value={f.field}
-                          >
-                            <option value="">— field —</option>
-                            {(tableMeta?.columns ?? []).map((c) => (
-                              <option key={c.name} value={c.name}>{c.displayName || c.name}</option>
-                            ))}
-                          </select>
-                          <select
-                            className="border border-gray-200 rounded px-1 py-1 bg-white w-20"
-                            onChange={(e) => updateFilter(idx, fi, { op: e.target.value as DataSourceFilter["op"] })}
-                            value={f.op}
-                          >
-                            <option value="eq">equals</option>
-                            <option value="neq">not equals</option>
-                            <option value="contains">contains</option>
-                            <option value="gt">greater than</option>
-                            <option value="lt">less than</option>
-                          </select>
-                          <input
-                            className="border border-gray-200 rounded px-1 py-1 flex-1"
-                            onChange={(e) => updateFilter(idx, fi, { value: e.target.value })}
-                            placeholder="value"
-                            value={f.value}
-                          />
-                          <button
-                            className="text-red-400 hover:text-red-600"
-                            onClick={() => removeFilter(idx, fi)}
-                            type="button"
-                          >
-                            <Trash2 size={12} />
-                          </button>
+                        <div className="border border-gray-100 rounded p-2 space-y-2" key={fi}>
+                          <div className="flex gap-1 items-center">
+                            <select
+                              className="border border-gray-200 rounded px-1 py-1 bg-white flex-1"
+                              onChange={(e) => updateFilter(idx, fi, { field: e.target.value })}
+                              value={f.field}
+                            >
+                              <option value="">— field —</option>
+                              {(tableMeta?.columns ?? []).map((c) => (
+                                <option key={c.name} value={c.name}>{c.displayName || c.name}</option>
+                              ))}
+                            </select>
+                            <select
+                              className="border border-gray-200 rounded px-1 py-1 bg-white w-24"
+                              onChange={(e) => updateFilter(idx, fi, { op: e.target.value as DataSourceFilter["op"] })}
+                              value={f.op}
+                            >
+                              <option value="eq">equals</option>
+                              <option value="neq">not equals</option>
+                              <option value="contains">contains</option>
+                              <option value="gt">greater than</option>
+                              <option value="lt">less than</option>
+                            </select>
+                            <button
+                              className="text-red-400 hover:text-red-600"
+                              onClick={() => removeFilter(idx, fi)}
+                              type="button"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+
+                          <div className="flex gap-1 items-center">
+                            <select
+                              className="border border-gray-200 rounded px-1 py-1 bg-white w-28"
+                              onChange={(e) =>
+                                updateFilter(idx, fi, {
+                                  valueSource: e.target.value as DataSourceFilter["valueSource"],
+                                })
+                              }
+                              value={f.valueSource || "static"}
+                            >
+                              <option value="static">Static</option>
+                              <option value="query">Querystring</option>
+                              <option value="body">Search payload</option>
+                            </select>
+                            {(f.valueSource || "static") === "static" ? (
+                              <input
+                                className="border border-gray-200 rounded px-1 py-1 flex-1"
+                                onChange={(e) => updateFilter(idx, fi, { value: e.target.value })}
+                                placeholder="value"
+                                value={f.value}
+                              />
+                            ) : (
+                              <input
+                                className="border border-gray-200 rounded px-1 py-1 flex-1"
+                                onChange={(e) => updateFilter(idx, fi, { valueKey: e.target.value })}
+                                placeholder="parameter key"
+                                value={f.valueKey || ""}
+                              />
+                            )}
+                            <label className="inline-flex items-center gap-1 text-[11px] text-gray-600">
+                              <input
+                                checked={Boolean(f.required)}
+                                onChange={(e) => updateFilter(idx, fi, { required: e.currentTarget.checked })}
+                                type="checkbox"
+                              />
+                              Required
+                            </label>
+                          </div>
+
+                          <div className="flex gap-1 items-center">
+                            <span className="text-[11px] text-gray-500 whitespace-nowrap">When missing:</span>
+                            <select
+                              className="border border-gray-200 rounded px-1 py-1 bg-white flex-1"
+                              disabled={Boolean(f.required)}
+                              onChange={(e) =>
+                                updateFilter(idx, fi, {
+                                  nullMode: e.target.value as DataSourceFilter["nullMode"],
+                                })
+                              }
+                              value={f.nullMode || "skip-filter"}
+                            >
+                              <option value="skip-filter">Ignore this filter</option>
+                              <option value="empty-string">Use empty string</option>
+                              <option value="match-null">Match null/empty values</option>
+                            </select>
+                          </div>
                         </div>
                       ))}
                     </div>

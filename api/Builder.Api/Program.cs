@@ -77,6 +77,43 @@ using (var scope = app.Services.CreateScope())
         """);
 
     await db.Database.ExecuteSqlRawAsync("""
+        IF NOT EXISTS (
+            SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_NAME = 'Pages' AND COLUMN_NAME = 'Status'
+        )
+        BEGIN
+            ALTER TABLE Pages ADD Status int NOT NULL CONSTRAINT DF_Pages_Status DEFAULT(0);
+        END
+        """);
+
+    await db.Database.ExecuteSqlRawAsync("""
+        IF NOT EXISTS (
+            SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_NAME = 'Pages' AND COLUMN_NAME = 'IsCompiled'
+        )
+        BEGIN
+            ALTER TABLE Pages ADD IsCompiled bit NOT NULL CONSTRAINT DF_Pages_IsCompiled DEFAULT(0);
+        END
+        """);
+
+    await db.Database.ExecuteSqlRawAsync("""
+        UPDATE Pages
+        SET IsCompiled = CASE
+            WHEN ISNULL(DATALENGTH(CompiledAssemblyBytes), 0) > 0 THEN 1
+            ELSE 0
+        END;
+        """);
+
+    await db.Database.ExecuteSqlRawAsync("""
+        UPDATE Pages
+        SET Status = 1
+        WHERE Status = 0
+          AND PublishedAt IS NOT NULL
+          AND PublishedJson IS NOT NULL
+          AND ISNULL(DATALENGTH(CompiledAssemblyBytes), 0) > 0;
+        """);
+
+    await db.Database.ExecuteSqlRawAsync("""
         IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'TableDefinitions')
         BEGIN
             CREATE TABLE TableDefinitions (
@@ -272,6 +309,37 @@ app.MapPost("/api/pages/{id}/publish", async (string id, PublishPageRequest requ
     return page is null
         ? Results.Conflict(new { error = "Slug is already used by another page" })
         : Results.Ok(PageDto.FromEntity(page));
+});
+
+app.MapPatch("/api/pages/{id}/status", async (string id, UpdatePageStatusRequest request, BuilderDbContext db) =>
+{
+    if (!TryParsePageLifecycleStatus(request.Status, out var status))
+    {
+        return Results.BadRequest(new { error = "Invalid status. Use draft, published, archived, or deleted." });
+    }
+
+    var page = await db.Pages.FirstOrDefaultAsync(p => p.Id == id || p.Slug == id);
+    if (page is null)
+        return Results.NotFound(new { error = "Page not found" });
+
+    if (status == PageLifecycleStatus.Published && !page.IsCompiled)
+    {
+        return Results.BadRequest(new
+        {
+            error = "Cannot mark page as published before a successful compile/publish.",
+        });
+    }
+
+    page.Status = status;
+    page.UpdatedAt = DateTimeOffset.UtcNow;
+
+    if (status == PageLifecycleStatus.Draft)
+    {
+        page.PublishedAt = null;
+    }
+
+    await db.SaveChangesAsync();
+    return Results.Ok(PageDto.FromEntity(page));
 });
 
 // ── Custom blocks ──────────────────────────────────────────────────────────
@@ -939,17 +1007,23 @@ app.MapPost("/api/relations/{id:guid}/link", async (Guid id, LinkRowsRequest req
 
 // ── Render published page ──────────────────────────────────────────────────
 
-app.MapGet("/api/pages/{id}/render", async (string id, BuilderDbContext db) =>
+app.MapMethods("/api/pages/{id}/render", ["GET", "POST"], async (
+    string id,
+    HttpRequest request,
+    BuilderDbContext db) =>
 {
     var page = await db.Pages.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id || p.Slug == id);
     if (page is null)
         return Results.NotFound(new { error = "Page not found" });
-    if (page.CompiledAssemblyBytes is null || page.CompiledAssemblyBytes.Length == 0)
+    if (!page.IsCompiled || page.CompiledAssemblyBytes is null || page.CompiledAssemblyBytes.Length == 0)
         return Results.BadRequest(new { error = "Page has not been compiled yet. Publish the page first." });
+    if (!CanRenderForStatus(page.Status))
+        return Results.BadRequest(new { error = "Page status does not allow runtime rendering." });
     if (page.DataSourceMapJson is null)
         return Results.BadRequest(new { error = "No datasource map found. Re-publish the page." });
 
-    var viewBag = await ResolveDataSources(page.DataSourceMapJson, db);
+    var requestInputs = await BuildDataSourceRequestInputs(request);
+    var viewBag = await ResolveDataSources(page.DataSourceMapJson, db, requestInputs);
     var html = RazorCompiler.Render(page.CompiledAssemblyBytes, viewBag);
     return Results.Content(html, "text/html");
 });
@@ -977,7 +1051,17 @@ static async Task<(Page? Page, string? CompileError)> UpsertPage(
 
     if (page is null)
     {
-        page = new Page { Id = id, Title = title, Slug = slug, DraftJson = rawData, CreatedAt = now, UpdatedAt = now };
+        page = new Page
+        {
+            Id = id,
+            Title = title,
+            Slug = slug,
+            DraftJson = rawData,
+            CreatedAt = now,
+            UpdatedAt = now,
+            Status = PageLifecycleStatus.Draft,
+            IsCompiled = false,
+        };
         db.Pages.Add(page);
     }
     else
@@ -1002,6 +1086,8 @@ static async Task<(Page? Page, string? CompileError)> UpsertPage(
             {
                 page.PublishedJson = rawData;
                 page.PublishedAt = now;
+                page.Status = PageLifecycleStatus.Published;
+                page.IsCompiled = true;
 
                 if (!string.IsNullOrWhiteSpace(request.DataSourceMapJson))
                     page.DataSourceMapJson = request.DataSourceMapJson;
@@ -1017,6 +1103,35 @@ static async Task<(Page? Page, string? CompileError)> UpsertPage(
 
     await db.SaveChangesAsync();
     return (page, compileError);
+}
+
+static bool CanRenderForStatus(PageLifecycleStatus status) =>
+    status is PageLifecycleStatus.Published or PageLifecycleStatus.Archived;
+
+static bool TryParsePageLifecycleStatus(string? rawStatus, out PageLifecycleStatus status)
+{
+    status = PageLifecycleStatus.Draft;
+    if (string.IsNullOrWhiteSpace(rawStatus))
+        return false;
+
+    switch (rawStatus.Trim().ToLowerInvariant())
+    {
+        case "draft":
+            status = PageLifecycleStatus.Draft;
+            return true;
+        case "published":
+            status = PageLifecycleStatus.Published;
+            return true;
+        case "archive":
+        case "archived":
+            status = PageLifecycleStatus.Archived;
+            return true;
+        case "deleted":
+            status = PageLifecycleStatus.Deleted;
+            return true;
+        default:
+            return false;
+    }
 }
 
 static string SafePageId(string value)
@@ -1195,11 +1310,197 @@ static void TryDeleteMediaFile(string mediaRootPath, string relativePath)
     }
 }
 
+static async Task<(IReadOnlyDictionary<string, string> Query, IReadOnlyDictionary<string, string> Body)> BuildDataSourceRequestInputs(HttpRequest request)
+{
+    var queryValues = request.Query
+        .ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value.ToString(),
+            StringComparer.OrdinalIgnoreCase);
+
+    var bodyValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    if (request.ContentLength is null or <= 0)
+        return (queryValues, bodyValues);
+
+    if (request.HasFormContentType)
+    {
+        try
+        {
+            var form = await request.ReadFormAsync();
+            foreach (var pair in form)
+                bodyValues[pair.Key] = pair.Value.ToString();
+        }
+        catch
+        {
+            // Ignore malformed form payloads for datasource filtering.
+        }
+
+        return (queryValues, bodyValues);
+    }
+
+    if (!string.IsNullOrWhiteSpace(request.ContentType) &&
+        request.ContentType.Contains("application/json", StringComparison.OrdinalIgnoreCase))
+    {
+        try
+        {
+            request.EnableBuffering();
+            using var reader = new StreamReader(
+                request.Body,
+                Encoding.UTF8,
+                detectEncodingFromByteOrderMarks: false,
+                leaveOpen: true);
+            var json = await reader.ReadToEndAsync();
+            request.Body.Position = 0;
+
+            if (!string.IsNullOrWhiteSpace(json))
+            {
+                using var doc = JsonDocument.Parse(json);
+                CollectJsonValues(doc.RootElement, "", bodyValues);
+            }
+        }
+        catch
+        {
+            // Ignore malformed JSON payloads for datasource filtering.
+        }
+    }
+
+    return (queryValues, bodyValues);
+}
+
+static void CollectJsonValues(
+    JsonElement element,
+    string prefix,
+    Dictionary<string, string> output)
+{
+    if (element.ValueKind == JsonValueKind.Object)
+    {
+        foreach (var property in element.EnumerateObject())
+        {
+            var key = string.IsNullOrWhiteSpace(prefix)
+                ? property.Name
+                : $"{prefix}.{property.Name}";
+            CollectJsonValues(property.Value, key, output);
+        }
+
+        return;
+    }
+
+    if (element.ValueKind == JsonValueKind.Array)
+    {
+        var values = new List<string>();
+        foreach (var item in element.EnumerateArray())
+        {
+            var scalar = JsonElementToString(item);
+            if (!string.IsNullOrWhiteSpace(scalar))
+                values.Add(scalar);
+        }
+
+        if (!string.IsNullOrWhiteSpace(prefix))
+        {
+            output[prefix] = values.Count > 0
+                ? string.Join(",", values)
+                : element.GetRawText();
+        }
+
+        return;
+    }
+
+    if (!string.IsNullOrWhiteSpace(prefix))
+        output[prefix] = JsonElementToString(element);
+}
+
+static string JsonElementToString(JsonElement value) =>
+    value.ValueKind switch
+    {
+        JsonValueKind.String => value.GetString() ?? "",
+        JsonValueKind.Number => value.GetRawText(),
+        JsonValueKind.True => "true",
+        JsonValueKind.False => "false",
+        JsonValueKind.Null => "",
+        _ => value.GetRawText(),
+    };
+
+static string? LookupInputValue(IReadOnlyDictionary<string, string> values, string key)
+{
+    var safeKey = key.Trim();
+    if (string.IsNullOrWhiteSpace(safeKey))
+        return null;
+
+    if (values.TryGetValue(safeKey, out var direct))
+        return direct;
+
+    var fallback = values.FirstOrDefault(entry =>
+        entry.Key.Equals(safeKey, StringComparison.OrdinalIgnoreCase));
+    return fallback.Key is null ? null : fallback.Value;
+}
+
+static bool IsMissing(string? value) => string.IsNullOrWhiteSpace(value);
+
+static (bool ApplyFilter, bool ExcludeSource, string Value, bool MatchNull) ResolveFilterValue(
+    JsonElement filter,
+    (IReadOnlyDictionary<string, string> Query, IReadOnlyDictionary<string, string> Body) requestInputs)
+{
+    var valueSource = GetString(filter, "valueSource", "static").ToLowerInvariant();
+    var configuredValue = GetString(filter, "value");
+    var valueKey = GetString(filter, "valueKey");
+    var required = filter.TryGetProperty("required", out var requiredValue) &&
+        requiredValue.ValueKind == JsonValueKind.True;
+    var nullMode = GetString(filter, "nullMode", "skip-filter").ToLowerInvariant();
+
+    var resolved = valueSource switch
+    {
+        "query" => LookupInputValue(requestInputs.Query, valueKey),
+        "body" => LookupInputValue(requestInputs.Body, valueKey),
+        _ => configuredValue,
+    };
+
+    if (required && IsMissing(resolved))
+        return (false, true, "", false);
+
+    if (IsMissing(resolved))
+    {
+        return nullMode switch
+        {
+            "empty-string" => (true, false, "", false),
+            "match-null" => (true, false, "", true),
+            _ => (false, false, "", false),
+        };
+    }
+
+    return (true, false, resolved ?? "", false);
+}
+
+static bool IsNullLikeValue(string value) =>
+    string.IsNullOrWhiteSpace(value) ||
+    value.Equals("null", StringComparison.OrdinalIgnoreCase);
+
+static bool CompareFilterValue(string actual, string op, string expected, bool matchNull)
+{
+    if (matchNull)
+    {
+        return op switch
+        {
+            "neq" => !IsNullLikeValue(actual),
+            _ => IsNullLikeValue(actual),
+        };
+    }
+
+    return op switch
+    {
+        "contains" => actual.Contains(expected, StringComparison.OrdinalIgnoreCase),
+        "neq" => !actual.Equals(expected, StringComparison.OrdinalIgnoreCase),
+        "gt" => string.Compare(actual, expected, StringComparison.OrdinalIgnoreCase) > 0,
+        "lt" => string.Compare(actual, expected, StringComparison.OrdinalIgnoreCase) < 0,
+        _ => actual.Equals(expected, StringComparison.OrdinalIgnoreCase),
+    };
+}
+
 static async Task<IReadOnlyDictionary<string, object?>> ResolveDataSources(
     string dataSourceMapJson,
-    BuilderDbContext db)
+    BuilderDbContext db,
+    (IReadOnlyDictionary<string, string> Query, IReadOnlyDictionary<string, string> Body) requestInputs)
 {
-    var result = new Dictionary<string, object?>();
+    var result = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
 
     JsonDocument doc;
     try { doc = JsonDocument.Parse(dataSourceMapJson); }
@@ -1207,6 +1508,30 @@ static async Task<IReadOnlyDictionary<string, object?>> ResolveDataSources(
 
     if (!TryGetDisplaySourceArrayFromMap(doc.RootElement, out var dsArray))
         return result;
+
+    var aliases = new List<(string Alias, string Target)>();
+    if (doc.RootElement.TryGetProperty("aliases", out var aliasArray) &&
+        aliasArray.ValueKind == JsonValueKind.Array)
+    {
+        foreach (var aliasItem in aliasArray.EnumerateArray())
+        {
+            var alias = aliasItem.TryGetProperty("alias", out var aliasName)
+                ? aliasName.GetString() ?? ""
+                : "";
+            var target = aliasItem.TryGetProperty("target", out var targetName)
+                ? targetName.GetString() ?? ""
+                : "";
+
+            if (string.IsNullOrWhiteSpace(alias) || string.IsNullOrWhiteSpace(target))
+                continue;
+
+            aliases.Add((alias, target));
+        }
+    }
+
+    var aliasSet = aliases
+        .Select(item => item.Alias)
+        .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
     foreach (var ds in dsArray.EnumerateArray())
     {
@@ -1219,6 +1544,8 @@ static async Task<IReadOnlyDictionary<string, object?>> ResolveDataSources(
 
         if (string.IsNullOrWhiteSpace(name) || !Guid.TryParse(tableId, out var tid))
             continue;
+        if (aliasSet.Contains(name))
+            continue;
 
         var query = db.DynamicRows.AsNoTracking().Where(r => r.TableId == tid);
 
@@ -1230,34 +1557,7 @@ static async Task<IReadOnlyDictionary<string, object?>> ResolveDataSources(
         var allRows = await ordered.ToListAsync();
 
         if (ds.TryGetProperty("filters", out var filters) && filters.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var f in filters.EnumerateArray())
-            {
-                var field = f.TryGetProperty("field", out var ff) ? ff.GetString() ?? "" : "";
-                var op    = f.TryGetProperty("op",    out var fo) ? fo.GetString() ?? "eq" : "eq";
-                var val   = f.TryGetProperty("value", out var fv) ? fv.GetString() ?? "" : "";
-                if (string.IsNullOrWhiteSpace(field)) continue;
-
-                allRows = allRows.Where(r =>
-                {
-                    try
-                    {
-                        using var rowDoc = JsonDocument.Parse(r.DataJson);
-                        if (!rowDoc.RootElement.TryGetProperty(field, out var prop)) return false;
-                        var propVal = prop.GetString() ?? prop.GetRawText();
-                        return op switch
-                        {
-                            "contains" => propVal.Contains(val, StringComparison.OrdinalIgnoreCase),
-                            "neq"      => !propVal.Equals(val, StringComparison.OrdinalIgnoreCase),
-                            "gt"       => string.Compare(propVal, val, StringComparison.OrdinalIgnoreCase) > 0,
-                            "lt"       => string.Compare(propVal, val, StringComparison.OrdinalIgnoreCase) < 0,
-                            _          => propVal.Equals(val, StringComparison.OrdinalIgnoreCase),
-                        };
-                    }
-                    catch { return false; }
-                }).ToList();
-            }
-        }
+            allRows = ApplyDataSourceFilters(allRows, filters, requestInputs);
 
         if (queryType == "single")
         {
@@ -1270,6 +1570,11 @@ static async Task<IReadOnlyDictionary<string, object?>> ResolveDataSources(
                 .Select(r => JsonRowToDictionary(r.DataJson))
                 .ToList();
         }
+    }
+
+    foreach (var (alias, target) in aliases)
+    {
+        result[alias] = result.TryGetValue(target, out var value) ? value : null;
     }
 
     return result;
@@ -1873,7 +2178,13 @@ static async Task<List<IReadOnlyDictionary<string, object?>>> ResolveOptionRows(
         dataSource.Value.TryGetProperty("filters", out var filters) &&
         filters.ValueKind == JsonValueKind.Array)
     {
-        rows = ApplyDataSourceFilters(rows, filters);
+        rows = ApplyDataSourceFilters(
+            rows,
+            filters,
+            (
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            ));
     }
 
     return rows
@@ -1949,29 +2260,32 @@ static bool TryFindDataSource(JsonElement pageData, string sourceName, out JsonE
     return false;
 }
 
-static List<DynamicRow> ApplyDataSourceFilters(List<DynamicRow> rows, JsonElement filters)
+static List<DynamicRow> ApplyDataSourceFilters(
+    List<DynamicRow> rows,
+    JsonElement filters,
+    (IReadOnlyDictionary<string, string> Query, IReadOnlyDictionary<string, string> Body) requestInputs)
 {
     foreach (var filter in filters.EnumerateArray())
     {
         var field = GetString(filter, "field");
         var op = GetString(filter, "op", "eq");
-        var value = GetString(filter, "value");
         if (string.IsNullOrWhiteSpace(field))
+            continue;
+
+        var resolution = ResolveFilterValue(filter, requestInputs);
+        if (resolution.ExcludeSource)
+            return [];
+        if (!resolution.ApplyFilter)
             continue;
 
         rows = rows.Where(row =>
         {
             var rowData = JsonRowToDictionary(row.DataJson);
-            var actual = DictValue(rowData, field);
+            if (!rowData.TryGetValue(field, out var rawActual))
+                return CompareFilterValue("", op, resolution.Value, resolution.MatchNull);
 
-            return op switch
-            {
-                "contains" => actual.Contains(value, StringComparison.OrdinalIgnoreCase),
-                "neq" => !actual.Equals(value, StringComparison.OrdinalIgnoreCase),
-                "gt" => string.Compare(actual, value, StringComparison.OrdinalIgnoreCase) > 0,
-                "lt" => string.Compare(actual, value, StringComparison.OrdinalIgnoreCase) < 0,
-                _ => actual.Equals(value, StringComparison.OrdinalIgnoreCase),
-            };
+            var actual = rawActual?.ToString() ?? "";
+            return CompareFilterValue(actual, op, resolution.Value, resolution.MatchNull);
         }).ToList();
     }
 

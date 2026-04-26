@@ -18,8 +18,11 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
+import { estimateQueryPlanForData } from "@/lib/datasource-query-plan";
 import { puckConfig } from "@/puck/config";
 import { ReusableLibraryModal } from "./ReusableLibraryModal";
+
+type PageStatus = "draft" | "published" | "archived" | "deleted";
 
 type PuckStudioProps = {
   initialData: Data;
@@ -29,8 +32,12 @@ type PuckStudioProps = {
     title: string;
     slug: string;
     publishedAt?: string;
+    status?: PageStatus;
+    isCompiled?: boolean;
   }>;
   publishedAt?: string;
+  pageStatus?: PageStatus;
+  isCompiled?: boolean;
 };
 
 const builderViewports: Viewports = [
@@ -39,6 +46,32 @@ const builderViewports: Viewports = [
   { width: 1280, height: 900, icon: "Monitor", label: "Desktop" },
   { width: "100%", height: 900, icon: "FullWidth", label: "Fluid" },
 ];
+
+const pageStatusOptions: Array<{ value: PageStatus; label: string }> = [
+  { value: "draft", label: "Draft" },
+  { value: "published", label: "Published" },
+  { value: "archived", label: "Archived" },
+  { value: "deleted", label: "Deleted" },
+];
+
+function normalizePageStatus(rawStatus?: string): PageStatus {
+  switch ((rawStatus || "").trim().toLowerCase()) {
+    case "published":
+      return "published";
+    case "archived":
+    case "archive":
+      return "archived";
+    case "deleted":
+      return "deleted";
+    default:
+      return "draft";
+  }
+}
+
+function pageStatusLabel(status: PageStatus) {
+  const match = pageStatusOptions.find((item) => item.value === status);
+  return match?.label || "Draft";
+}
 
 type PuckEditorToolbarProps = {
   links: {
@@ -170,12 +203,22 @@ export function PuckStudio({
   pageId,
   pages,
   publishedAt,
+  pageStatus,
+  isCompiled,
 }: PuckStudioProps) {
-  const [, setCurrentData] = useState<Data>(initialData);
-  const [status, setStatus] = useState(
+  const [currentData, setCurrentData] = useState<Data>(initialData);
+  const [activityStatus, setActivityStatus] = useState(
     publishedAt ? `Last published ${new Date(publishedAt).toLocaleString()}` : "Unpublished",
   );
-  const [publishIssue, setPublishIssue] = useState<{
+  const [pageLifecycleStatus, setPageLifecycleStatus] = useState<PageStatus>(
+    normalizePageStatus(pageStatus),
+  );
+  const [pendingLifecycleStatus, setPendingLifecycleStatus] = useState<PageStatus>(
+    normalizePageStatus(pageStatus),
+  );
+  const [compiledState, setCompiledState] = useState(Boolean(isCompiled));
+  const [statusBusy, setStatusBusy] = useState(false);
+  const [editorIssue, setEditorIssue] = useState<{
     error: string;
     details?: string;
   } | null>(null);
@@ -184,14 +227,21 @@ export function PuckStudio({
     () => ({
       preview: `/p/${pageId}`,
       export: `/api/pages/${pageId}/export`,
-      cshtml: `/api/pages/${pageId}/cshtml`,
+      cshtml: `/builder/pages/${pageId}/cshtml`,
     }),
     [pageId],
   );
+  const queryPlan = useMemo(() => estimateQueryPlanForData(currentData), [currentData]);
+  const queryHint =
+    queryPlan.level === "red"
+      ? "High DB pressure. Reduce datasources or enable aliasing."
+      : queryPlan.level === "amber"
+        ? "Moderate DB pressure."
+        : "Datasource load is healthy.";
 
   async function publish(data: Data) {
-    setStatus("Publishing...");
-    setPublishIssue(null);
+    setActivityStatus("Publishing...");
+    setEditorIssue(null);
 
     const response = await fetch(`/api/pages/${pageId}/publish`, {
       method: "POST",
@@ -215,21 +265,85 @@ export function PuckStudio({
         // Ignore JSON parse errors and keep generic message.
       }
 
-      setStatus("Publish failed");
-      setPublishIssue({
+      setActivityStatus("Publish failed");
+      setEditorIssue({
         error: errorMessage,
         details,
       });
       return;
     }
 
-    const payload = (await response.json()) as { page: { publishedAt?: string } };
-    setStatus(
+    const payload = (await response.json()) as {
+      page: { publishedAt?: string; status?: string; isCompiled?: boolean };
+    };
+    setActivityStatus(
       payload.page.publishedAt
         ? `Published ${new Date(payload.page.publishedAt).toLocaleString()}`
         : "Published",
     );
-    setPublishIssue(null);
+    setPageLifecycleStatus(normalizePageStatus(payload.page.status));
+    setPendingLifecycleStatus(normalizePageStatus(payload.page.status));
+    setCompiledState(Boolean(payload.page.isCompiled));
+    setEditorIssue(null);
+  }
+
+  async function updateStatus(nextStatus: PageStatus) {
+    if (statusBusy) {
+      return;
+    }
+
+    setStatusBusy(true);
+    setActivityStatus(`Setting status to ${pageStatusLabel(nextStatus)}...`);
+    setEditorIssue(null);
+
+    try {
+      const response = await fetch(`/api/pages/${pageId}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: nextStatus }),
+      });
+
+      if (!response.ok) {
+        let errorMessage = "Status update failed";
+        let details: string | undefined;
+
+        try {
+          const payload = (await response.json()) as { error?: string; details?: string };
+          if (payload.error?.trim()) {
+            errorMessage = payload.error.trim();
+          }
+          if (payload.details?.trim()) {
+            details = payload.details.trim();
+          }
+        } catch {
+          // Ignore JSON parse errors and keep generic message.
+        }
+
+        setActivityStatus("Status update failed");
+        setEditorIssue({
+          error: errorMessage,
+          details,
+        });
+        return;
+      }
+
+      const payload = (await response.json()) as {
+        page: { status?: string; isCompiled?: boolean; publishedAt?: string };
+      };
+      const resolvedStatus = normalizePageStatus(payload.page.status);
+      setPageLifecycleStatus(resolvedStatus);
+      setPendingLifecycleStatus(resolvedStatus);
+      setCompiledState(Boolean(payload.page.isCompiled));
+      setActivityStatus(`Status set to ${pageStatusLabel(resolvedStatus)}`);
+      setEditorIssue(null);
+    } catch {
+      setActivityStatus("Status update failed");
+      setEditorIssue({
+        error: "Could not reach the status service.",
+      });
+    } finally {
+      setStatusBusy(false);
+    }
   }
 
   return (
@@ -240,7 +354,39 @@ export function PuckStudio({
           <h1>Page and form builder</h1>
         </div>
         <div className="studio-actions" aria-label="Builder actions">
-          <span className="studio-status">{status}</span>
+          <span className="studio-status">{activityStatus}</span>
+          <span className={`studio-page-state studio-page-state--${pageLifecycleStatus}`}>
+            {pageStatusLabel(pageLifecycleStatus)}
+            {compiledState ? " | compiled" : " | not compiled"}
+          </span>
+          <label className="studio-status-control" htmlFor="page-status-select">
+            <span>Status</span>
+            <select
+              id="page-status-select"
+              onChange={(event) => setPendingLifecycleStatus(event.target.value as PageStatus)}
+              value={pendingLifecycleStatus}
+            >
+              {pageStatusOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            className="studio-icon-link"
+            disabled={statusBusy || pendingLifecycleStatus === pageLifecycleStatus}
+            onClick={() => updateStatus(pendingLifecycleStatus)}
+            type="button"
+          >
+            {statusBusy ? "Saving..." : "Apply status"}
+          </button>
+          <span
+            className={`studio-query-budget studio-query-budget--${queryPlan.level}`}
+            title={`${queryPlan.estimatedQueries} estimated datasource queries per render. ${queryHint}`}
+          >
+            {queryPlan.estimatedQueries} queries
+          </span>
           <details className="studio-nav-menu">
             <summary>
               <Menu size={16} />
@@ -276,7 +422,9 @@ export function PuckStudio({
                     key={page.id}
                   >
                     <span>{page.title}</span>
-                    <small>/{page.slug}</small>
+                    <small>
+                      /{page.slug} | {pageStatusLabel(normalizePageStatus(page.status))}
+                    </small>
                   </Link>
                 ))}
               </section>
@@ -296,15 +444,15 @@ export function PuckStudio({
           </a>
         </div>
       </header>
-      {publishIssue ? (
+      {editorIssue ? (
         <div className="studio-notice studio-notice--error" role="status">
           <div>
-            <strong>{publishIssue.error}</strong>
-            {publishIssue.details ? <pre>{publishIssue.details}</pre> : null}
+            <strong>{editorIssue.error}</strong>
+            {editorIssue.details ? <pre>{editorIssue.details}</pre> : null}
           </div>
           <button
-            aria-label="Dismiss publish error"
-            onClick={() => setPublishIssue(null)}
+            aria-label="Dismiss editor error"
+            onClick={() => setEditorIssue(null)}
             type="button"
           >
             <X size={14} />

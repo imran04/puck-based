@@ -3,9 +3,20 @@ import "server-only";
 import type { Data } from "@puckeditor/core";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { createApiPage, getApiPage, listApiPages, publishApiPage, saveApiDraftPage } from "./builder-api";
+import {
+  createApiPage,
+  getApiPage,
+  listApiPages,
+  publishApiPage,
+  saveApiDraftPage,
+  type ApiPage,
+  type ApiPageStatus,
+  updateApiPageStatus,
+} from "./builder-api";
 import { initialPageData } from "@/puck/initial-data";
 import type { TemplateBundle } from "./datasource-template";
+
+export type PageStatus = ApiPageStatus;
 
 export type StoredPage = {
   id: string;
@@ -16,6 +27,8 @@ export type StoredPage = {
   createdAt: string;
   updatedAt: string;
   publishedAt?: string;
+  status: PageStatus;
+  isCompiled: boolean;
 };
 
 const pagesDir = path.join(process.cwd(), "data", "pages");
@@ -71,24 +84,31 @@ function normalizeData(data: Data): Data {
   return normalized;
 }
 
+function normalizeStatus(rawStatus?: string | null): PageStatus {
+  switch ((rawStatus || "").trim().toLowerCase()) {
+    case "published":
+      return "published";
+    case "archived":
+    case "archive":
+      return "archived";
+    case "deleted":
+      return "deleted";
+    default:
+      return "draft";
+  }
+}
+
 function normalizeStoredPage(page: StoredPage): StoredPage {
   return {
     ...page,
     draft: normalizeData(page.draft),
     published: page.published ? normalizeData(page.published) : undefined,
+    status: normalizeStatus(page.status),
+    isCompiled: typeof page.isCompiled === "boolean" ? page.isCompiled : false,
   };
 }
 
-function apiPageToStoredPage(apiPage: {
-  id: string;
-  title: string;
-  slug: string;
-  draft: Data;
-  published?: Data | null;
-  createdAt: string;
-  updatedAt: string;
-  publishedAt?: string | null;
-}): StoredPage {
+function apiPageToStoredPage(apiPage: ApiPage): StoredPage {
   return normalizeStoredPage({
     id: apiPage.id,
     title: apiPage.title,
@@ -98,6 +118,8 @@ function apiPageToStoredPage(apiPage: {
     createdAt: apiPage.createdAt,
     updatedAt: apiPage.updatedAt,
     publishedAt: apiPage.publishedAt || undefined,
+    status: normalizeStatus(apiPage.status),
+    isCompiled: Boolean(apiPage.isCompiled),
   });
 }
 
@@ -120,6 +142,8 @@ function createInitialPage(pageId: string): StoredPage {
     title: pageTitle(draft, "Puck Studio Page"),
     slug: pageId,
     draft,
+    status: "draft",
+    isCompiled: false,
     createdAt: now,
     updatedAt: now,
   };
@@ -159,7 +183,7 @@ async function readJsonPages(): Promise<StoredPage[]> {
       jsonFiles.map(async (file) => {
         try {
           const raw = await readFile(path.join(pagesDir, file), "utf8");
-          return JSON.parse(raw) as StoredPage;
+          return normalizeStoredPage(JSON.parse(raw) as StoredPage);
         } catch {
           return null;
         }
@@ -294,4 +318,19 @@ export async function publishPage(pageId: string, data: Data, bundle?: TemplateB
   const publishedPage = apiPageToStoredPage(apiPage);
   await writePage(publishedPage);
   return publishedPage;
+}
+
+export async function updatePageStatus(pageId: string, status: PageStatus) {
+  const existing = await readOrCreatePage(pageId);
+  const apiPage = await updateApiPageStatus(pageId, status);
+  if (!apiPage) {
+    throw new Error("Status update did not complete on Builder API.");
+  }
+
+  const updatedPage = apiPageToStoredPage(apiPage);
+  await writePage({
+    ...existing,
+    ...updatedPage,
+  });
+  return updatedPage;
 }

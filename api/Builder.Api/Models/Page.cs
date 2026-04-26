@@ -19,6 +19,16 @@ public sealed class Page
     public DateTimeOffset? PublishedAt { get; set; }
 
     /// <summary>
+    /// Lifecycle status: draft, published, archived, deleted.
+    /// </summary>
+    public PageLifecycleStatus Status { get; set; } = PageLifecycleStatus.Draft;
+
+    /// <summary>
+    /// True when the currently published runtime assembly is compiled and available.
+    /// </summary>
+    public bool IsCompiled { get; set; }
+
+    /// <summary>
     /// JSON object containing displaySources (with legacy dataSources alias).
     /// </summary>
     public string? DataSourceMapJson { get; set; }

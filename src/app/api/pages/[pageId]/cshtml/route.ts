@@ -1,6 +1,4 @@
-import { getApiPageCshtml } from "@/lib/builder-api";
-import { buildTemplateBundle } from "@/lib/datasource-template";
-import { getPage } from "@/lib/page-store";
+import { resolveCshtmlArtifact } from "@/lib/cshtml-artifact";
 
 export const dynamic = "force-dynamic";
 
@@ -26,31 +24,15 @@ export async function GET(
   context: RouteContext<"/api/pages/[pageId]/cshtml">,
 ) {
   const { pageId } = await context.params;
-  const artifact = await getApiPageCshtml(pageId);
-
-  if (artifact?.razorTemplate?.trim()) {
-    return cshtmlResponse({
-      id: artifact.id,
-      slug: artifact.slug,
-      source: "published",
-      razorTemplate: artifact.razorTemplate,
-    });
-  }
-
-  const page = await getPage(pageId);
-  if (!page) {
+  const artifact = await resolveCshtmlArtifact(pageId);
+  if (!artifact) {
     return Response.json({ error: "Page not found." }, { status: 404 });
   }
 
-  const bundle = buildTemplateBundle(page.draft, {
-    pageId: page.id,
-    pageSlug: page.slug,
-  });
-
   return cshtmlResponse({
-    id: page.id,
-    slug: page.slug,
-    source: "draft",
-    razorTemplate: bundle.razorTemplate,
+    id: artifact.id,
+    slug: artifact.slug,
+    source: artifact.source,
+    razorTemplate: artifact.razorTemplate,
   });
 }

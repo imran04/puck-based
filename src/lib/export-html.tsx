@@ -401,6 +401,19 @@ function renderComponent(item: PuckItem): string {
 </section>`;
     }
 
+    case "ForEach": {
+      const source = String(props.source || "").trim();
+      const objectName = String(props.objectName || "item").trim() || "item";
+      if (!source) {
+        return `<div class="pb-empty-state">Configure a datasource for this for-each block.</div>`;
+      }
+
+      return `<section class="pb-foreach">
+  <p class="pb-foreach__meta">For each <strong>${escapeHtml(objectName)}</strong> in <strong>${escapeHtml(source)}</strong></p>
+  ${slot(props.content)}
+</section>`;
+    }
+
     case "ButtonLink": {
       const className =
         props.variant === "secondary" ? "pb-button pb-button--secondary" : "pb-button";

@@ -71,6 +71,97 @@ body {
   font-weight: 700;
 }
 
+.studio-page-state {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-size: 0.76rem;
+  font-weight: 900;
+  padding: 0 10px;
+  text-transform: uppercase;
+}
+
+.studio-page-state--draft {
+  border-color: #d9dee5;
+  background: #f4f6f9;
+  color: #4f5661;
+}
+
+.studio-page-state--published {
+  border-color: #b8e0c4;
+  background: #eefaf1;
+  color: #1b6a34;
+}
+
+.studio-page-state--archived {
+  border-color: #e0d3f5;
+  background: #f7f2ff;
+  color: #60429a;
+}
+
+.studio-page-state--deleted {
+  border-color: #f3b3b3;
+  background: #fff1f0;
+  color: #8f1d1d;
+}
+
+.studio-status-control {
+  display: grid;
+  gap: 4px;
+}
+
+.studio-status-control span {
+  color: #5f6368;
+  font-size: 0.7rem;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.studio-status-control select {
+  min-height: 38px;
+  border: 1px solid #d9dee5;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #171717;
+  font-size: 0.88rem;
+  font-weight: 800;
+  padding: 0 11px;
+}
+
+.studio-query-budget {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 900;
+  padding: 0 10px;
+}
+
+.studio-query-budget--green {
+  border-color: #b8e0c4;
+  background: #eefaf1;
+  color: #1b6a34;
+}
+
+.studio-query-budget--amber {
+  border-color: #f1d39f;
+  background: #fff6e8;
+  color: #9a6412;
+}
+
+.studio-query-budget--red {
+  border-color: #f3b3b3;
+  background: #fff1f0;
+  color: #8f1d1d;
+}
+
 .studio-notice {
   display: flex;
   align-items: flex-start;
@@ -237,12 +328,19 @@ body {
   transition:
     border-color 160ms ease,
     transform 160ms ease;
+  cursor: pointer;
 }
 
 .studio-icon-link:hover,
 .studio-publish-link:hover {
   border-color: #1b6dff;
   transform: translateY(-1px);
+}
+
+.studio-icon-link:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  transform: none;
 }
 
 .studio-publish-link {
