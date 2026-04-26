@@ -24,22 +24,22 @@
 
 ```mermaid
 flowchart LR
-    U[Author User] --> S[Next.js Studio /builder/pages/:id]
-    S -->|Save draft| N1[/api/pages/:id/draft (Next route)/]
-    N1 --> B[Builder API :5056]
-    B --> DB[(MSSQL)]
+    U["Author User"] --> S["Next.js Studio /builder/pages/:id"]
+    S -->|"Save draft"| N1["/api/pages/:id/draft (Next route)"]
+    N1 --> B["Builder API :5056"]
+    B --> DB[("MSSQL")]
 
-    S -->|Publish| N2[/api/pages/:id/publish (Next route)/]
-    N2 --> T[buildTemplateBundle: HTML + Razor + C# + datasource map]
+    S -->|"Publish"| N2["/api/pages/:id/publish (Next route)"]
+    N2 --> T["buildTemplateBundle: HTML + Razor + C# + datasource map"]
     T --> B
-    B --> C[RazorCompiler (Roslyn)]
+    B --> C["RazorCompiler (Roslyn)"]
     C --> DB
 
-    R[Runtime Browser xyz.com/slug] --> M[Runtime MVC app]
-    M -->|GET or POST /api/pages/:slug/render| B
-    B --> Q[Resolve datasources + build ViewBag]
+    R["Runtime Browser xyz.com/slug"] --> M["Runtime MVC app"]
+    M -->|"GET or POST /api/pages/:slug/render"| B
+    B --> Q["Resolve datasources + build ViewBag"]
     Q --> DB
-    B --> H[Render compiled assembly -> HTML]
+    B --> H["Render compiled assembly -> HTML"]
     H --> R
 ```
 
