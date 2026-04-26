@@ -9,6 +9,104 @@
 
 ---
 
+## Technical Architecture Flow (Current)
+
+### Deployment topology
+
+- **Authoring app (Next.js, port 3000)**: Puck editor, page manager, table manager, CSHTML viewer
+- **Builder API (ASP.NET Minimal API, port 5056)**: source of truth for pages, compile/render engine, tables, media, runtime form handling
+- **Runtime host (ASP.NET MVC app)**: catch-all `/{*slug}` route that proxies to Builder API render endpoint
+- **Data stores**:
+  - MSSQL local/prod for pages, datasources, rows, submissions, media metadata
+  - Filesystem for media binaries
+
+### End-to-end architecture flow
+
+```mermaid
+flowchart LR
+    U[Author User] --> S[Next.js Studio /builder/pages/:id]
+    S -->|Save draft| N1[/api/pages/:id/draft (Next route)/]
+    N1 --> B[Builder API :5056]
+    B --> DB[(MSSQL)]
+
+    S -->|Publish| N2[/api/pages/:id/publish (Next route)/]
+    N2 --> T[buildTemplateBundle: HTML + Razor + C# + datasource map]
+    T --> B
+    B --> C[RazorCompiler (Roslyn)]
+    C --> DB
+
+    R[Runtime Browser xyz.com/slug] --> M[Runtime MVC app]
+    M -->|GET or POST /api/pages/:slug/render| B
+    B --> Q[Resolve datasources + build ViewBag]
+    Q --> DB
+    B --> H[Render compiled assembly -> HTML]
+    H --> R
+```
+
+### Publish/compile flow (authoring path)
+
+1. User edits in Puck (`/builder/pages/{pageId}`).
+2. Next route `/api/pages/{pageId}/publish` generates a `TemplateBundle`:
+   - datasource map JSON
+   - intermediate Razor template (CSHTML artifact)
+   - generated C# renderer source
+3. Next route sends publish payload to Builder API `POST /api/pages/{id}/publish`.
+4. Builder API compiles generated C# using Roslyn.
+5. On success, API persists:
+   - `PublishedJson`
+   - `RazorTemplate`
+   - `CompiledAssemblyBytes`
+   - `DataSourceMapJson`
+   - `IsCompiled = true`, `Status = published`
+6. On compile failure, API returns error details and does **not** advance page to published/compiled state.
+
+### Page lifecycle flow
+
+- Supported statuses: `draft`, `published`, `archived`, `deleted`
+- Updated via: `PATCH /api/pages/{id}/status`
+- Guardrail: setting `published` is blocked when `IsCompiled == false`
+- Runtime render gate:
+  - requires compiled assembly
+  - allows only renderable statuses (`published`, `archived`)
+
+```mermaid
+stateDiagram-v2
+    [*] --> draft
+    draft --> published: publish success (compiled)
+    published --> archived: status update
+    archived --> published: status update
+    draft --> deleted: status update
+    published --> deleted: status update
+    archived --> deleted: status update
+```
+
+### Runtime render flow (`/api/pages/{id}/render`)
+
+1. Request arrives either directly to Builder API, or via Runtime MVC catch-all slug route.
+2. API validates page exists, compiled assembly exists, and status is renderable.
+3. API reads datasource map and resolves datasource queries (supports query/body runtime filter inputs).
+4. API builds `ViewBag` dictionary from datasource results.
+5. API executes compiled renderer assembly with `ViewBag` and returns HTML response.
+
+### Runtime form flow (`/api/forms/runtime-submit`)
+
+1. Rendered form posts to first-party endpoint with hidden identifiers:
+   - `_pbPageId`, `_pbPageSlug`, `_pbFormId`, `_pbFormTitle`
+2. API finds form definition on page JSON and validates context.
+3. API persists dynamic JSON submission payload.
+4. If form sink mapping exists, API writes mapped values to linked datasource table row.
+5. If relay URL exists, API relays request server-to-server and records relay status.
+6. API returns user-facing success HTML response.
+
+### Media flow (filesystem-backed)
+
+1. Builder uploads media via `POST /api/media/upload`.
+2. Binary stored on filesystem (`MediaRoot/...`), metadata stored in DB (`MediaAssets`).
+3. Components reference media by asset id.
+4. Runtime serves asset through first-party URL: `GET /media/{id}`.
+
+---
+
 ## Placeholder DSL (Documented, Pending Implementation)
 
 This section documents the approved placeholder syntax to be implemented later.
