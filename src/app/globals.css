@@ -25,6 +25,150 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+.studio-login {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  background: #eef2f7;
+  color: #171717;
+  padding: 20px;
+}
+
+.studio-login__panel {
+  display: grid;
+  width: min(560px, 100%);
+  gap: 16px;
+  border: 1px solid #d9dee5;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 24px;
+}
+
+.studio-login__intro h1 {
+  margin: 6px 0 10px;
+  font-size: 1.8rem;
+  font-weight: 900;
+  line-height: 1.1;
+}
+
+.studio-login__intro p {
+  margin: 0;
+  color: #5f6368;
+}
+
+.studio-login__form {
+  display: grid;
+  gap: 12px;
+}
+
+.studio-login__form label {
+  display: grid;
+  gap: 6px;
+  color: #4f5661;
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+.studio-login__form input {
+  min-height: 42px;
+  border: 1px solid #d9dee5;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #171717;
+  font: inherit;
+  font-size: 0.96rem;
+  padding: 0 12px;
+}
+
+.studio-login__form button {
+  min-height: 42px;
+  border: 1px solid #0d4fd1;
+  border-radius: 8px;
+  background: #1b6dff;
+  color: #ffffff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.95rem;
+  font-weight: 900;
+  padding: 0 14px;
+}
+
+.studio-login__notice {
+  border: 1px solid #d9dee5;
+  border-radius: 8px;
+  background: #f7f9fc;
+  color: #4f5661;
+  font-size: 0.88rem;
+  padding: 10px 12px;
+}
+
+.studio-login__notice--warn {
+  border-color: #f1d39f;
+  background: #fff6e8;
+  color: #9a6412;
+}
+
+.studio-login__notice--error {
+  border-color: #f3b3b3;
+  background: #fff1f0;
+  color: #8f1d1d;
+}
+
+.studio-login__notice strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.studio-login__notice p {
+  margin: 0;
+}
+
+.studio-login__roles {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid #eef1f5;
+  padding-top: 12px;
+}
+
+.studio-login__roles p {
+  margin: 0;
+  color: #5f6368;
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.studio-login__roles ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.studio-login__roles li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid #d9dee5;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #171717;
+  font-size: 0.88rem;
+  font-weight: 800;
+  padding: 8px 10px;
+}
+
+.studio-login__roles li small {
+  color: #5f6368;
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
 .studio-shell {
   min-height: 100vh;
   background: #eef2f7;
@@ -63,6 +207,10 @@ body {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 10px;
+}
+
+.studio-actions form {
+  display: inline-flex;
 }
 
 .studio-status {

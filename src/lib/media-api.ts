@@ -1,5 +1,6 @@
 import "server-only";
 
+import { withAdminSessionHeader } from "./admin-session-header";
 import type {
   ListMediaResponse,
   MediaAsset,
@@ -18,7 +19,7 @@ async function mediaApiFetch<T>(
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const headers = new Headers(init?.headers ?? undefined);
+    const headers = await withAdminSessionHeader({ headers: init?.headers });
     if (init?.body && !(init.body instanceof FormData)) {
       headers.set("Content-Type", "application/json");
     }
@@ -76,9 +77,11 @@ export async function deleteMediaAsset(assetId: string): Promise<boolean> {
   const timeout = setTimeout(() => controller.abort(), 5000);
 
   try {
+    const headers = await withAdminSessionHeader();
     const response = await fetch(`${apiBaseUrl}/api/media/${encodeURIComponent(assetId)}`, {
       method: "DELETE",
       cache: "no-store",
+      headers,
       signal: controller.signal,
     });
 

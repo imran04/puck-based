@@ -1,6 +1,7 @@
 import "server-only";
 
 import type { Data } from "@puckeditor/core";
+import { withAdminSessionHeader } from "./admin-session-header";
 import type { ReusableBlock, ReusableBlockInput, ReusableBlockKind } from "./reusable-blocks";
 import type { TemplateBundle } from "./datasource-template";
 
@@ -40,13 +41,17 @@ async function builderFetch<T>(
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(`${apiBaseUrl}${path}`, {
-      ...init,
-      cache: "no-store",
+    const headers = await withAdminSessionHeader({
       headers: {
         "Content-Type": "application/json",
         ...(init?.headers || {}),
       },
+    });
+
+    const response = await fetch(`${apiBaseUrl}${path}`, {
+      ...init,
+      cache: "no-store",
+      headers,
       signal: controller.signal,
     });
 
@@ -125,12 +130,16 @@ export async function publishApiPage(pageId: string, title: string, data: Data, 
   const timeout = setTimeout(() => controller.abort(), 20000);
 
   try {
-    const response = await fetch(`${apiBaseUrl}/api/pages/${encodeURIComponent(pageId)}/publish`, {
-      method: "POST",
-      cache: "no-store",
+    const headers = await withAdminSessionHeader({
       headers: {
         "Content-Type": "application/json",
       },
+    });
+
+    const response = await fetch(`${apiBaseUrl}/api/pages/${encodeURIComponent(pageId)}/publish`, {
+      method: "POST",
+      cache: "no-store",
+      headers,
       body: JSON.stringify({
         title,
         slug: pageId,
@@ -157,12 +166,16 @@ export async function updateApiPageStatus(pageId: string, status: ApiPageStatus)
   const timeout = setTimeout(() => controller.abort(), 7000);
 
   try {
-    const response = await fetch(`${apiBaseUrl}/api/pages/${encodeURIComponent(pageId)}/status`, {
-      method: "PATCH",
-      cache: "no-store",
+    const headers = await withAdminSessionHeader({
       headers: {
         "Content-Type": "application/json",
       },
+    });
+
+    const response = await fetch(`${apiBaseUrl}/api/pages/${encodeURIComponent(pageId)}/status`, {
+      method: "PATCH",
+      cache: "no-store",
+      headers,
       body: JSON.stringify({ status }),
       signal: controller.signal,
     });
@@ -194,11 +207,13 @@ export async function deleteApiReusableBlock(blockId: string) {
   const timeout = setTimeout(() => controller.abort(), 900);
 
   try {
+    const headers = await withAdminSessionHeader();
     const response = await fetch(
       `${apiBaseUrl}/api/custom-blocks/${encodeURIComponent(blockId)}`,
       {
         cache: "no-store",
         method: "DELETE",
+        headers,
         signal: controller.signal,
       },
     );

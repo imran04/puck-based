@@ -1,5 +1,7 @@
 import "server-only";
 
+import { withAdminSessionHeader } from "./admin-session-header";
+
 export type ColumnType = "text" | "longtext" | "number" | "boolean" | "date" | "datetime" | "url";
 
 export type ColumnDefinition = {
@@ -50,10 +52,14 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T | null> 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2000);
   try {
+    const headers = await withAdminSessionHeader({
+      headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    });
+
     const res = await fetch(`${apiBaseUrl}${path}`, {
       ...init,
       cache: "no-store",
-      headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+      headers,
       signal: controller.signal,
     });
     if (res.status === 404) return null;
@@ -92,9 +98,11 @@ export async function deleteTable(id: string): Promise<boolean> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2000);
   try {
+    const headers = await withAdminSessionHeader();
     const res = await fetch(`${apiBaseUrl}/api/tables/${encodeURIComponent(id)}`, {
       method: "DELETE",
       cache: "no-store",
+      headers,
       signal: controller.signal,
     });
     return res.ok || res.status === 204;
@@ -133,9 +141,10 @@ export async function deleteRow(tableId: string, rowId: string): Promise<boolean
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2000);
   try {
+    const headers = await withAdminSessionHeader();
     const res = await fetch(
       `${apiBaseUrl}/api/tables/${encodeURIComponent(tableId)}/rows/${encodeURIComponent(rowId)}`,
-      { method: "DELETE", cache: "no-store", signal: controller.signal },
+      { method: "DELETE", cache: "no-store", headers, signal: controller.signal },
     );
     return res.ok || res.status === 204;
   } catch {
@@ -161,9 +170,11 @@ export async function deleteRelation(relationId: string): Promise<boolean> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2000);
   try {
+    const headers = await withAdminSessionHeader();
     const res = await fetch(`${apiBaseUrl}/api/relations/${encodeURIComponent(relationId)}`, {
       method: "DELETE",
       cache: "no-store",
+      headers,
       signal: controller.signal,
     });
     return res.ok || res.status === 204;

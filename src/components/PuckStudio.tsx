@@ -8,6 +8,7 @@ import {
   ExternalLink,
   FileCode2,
   LayoutTemplate,
+  LogOut,
   Menu,
   PanelLeft,
   PanelRight,
@@ -442,6 +443,13 @@ export function PuckStudio({
             <FileCode2 size={16} />
             CSHTML
           </a>
+          <form action="/api/auth/logout" method="post">
+            <input name="next" type="hidden" value="/login" />
+            <button className="studio-icon-link" type="submit">
+              <LogOut size={16} />
+              Sign out
+            </button>
+          </form>
         </div>
       </header>
       {editorIssue ? (

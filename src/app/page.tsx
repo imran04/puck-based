@@ -1,4 +1,4 @@
-import { ArrowRight, Download, Eye, FileCode2, FilePlus2, LayoutTemplate, Database, Cpu } from "lucide-react";
+import { ArrowRight, Download, Eye, FileCode2, FilePlus2, LayoutTemplate, Database, Cpu, LogOut } from "lucide-react";
 import Link from "next/link";
 import { listPages } from "@/lib/page-store";
 
@@ -27,6 +27,16 @@ export default async function Home() {
             </h1>
           </div>
           <div className="flex gap-3">
+            <form action="/api/auth/logout" method="post">
+              <input name="next" type="hidden" value="/login" />
+              <button
+                className="inline-flex min-h-12 items-center justify-center gap-2 rounded-lg border border-[#d9dee5] bg-white px-5 font-bold transition hover:bg-[#f0f4f8]"
+                type="submit"
+              >
+                <LogOut size={18} />
+                Sign out
+              </button>
+            </form>
             <Link
               className="inline-flex min-h-12 items-center justify-center gap-2 rounded-lg border border-[#d9dee5] bg-white px-5 font-bold transition hover:bg-[#f0f4f8]"
               href="/tables"

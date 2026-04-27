@@ -13,6 +13,8 @@ public sealed class BuilderDbContext(DbContextOptions<BuilderDbContext> options)
     public DbSet<DynamicRow> DynamicRows => Set<DynamicRow>();
     public DbSet<DynamicRelationRow> DynamicRelationRows => Set<DynamicRelationRow>();
     public DbSet<MediaAsset> MediaAssets => Set<MediaAsset>();
+    public DbSet<AdminUser> AdminUsers => Set<AdminUser>();
+    public DbSet<AdminSession> AdminSessions => Set<AdminSession>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -122,6 +124,31 @@ public sealed class BuilderDbContext(DbContextOptions<BuilderDbContext> options)
             entity.Property(a => a.TagsJson).HasColumnType("nvarchar(max)");
             entity.HasIndex(a => a.CreatedAt);
             entity.HasIndex(a => a.RelativePath).IsUnique();
+        });
+
+        modelBuilder.Entity<AdminUser>(entity =>
+        {
+            entity.ToTable("AdminUsers");
+            entity.HasKey(u => u.Id);
+            entity.Property(u => u.Username).HasMaxLength(128);
+            entity.Property(u => u.PasswordHash).HasMaxLength(512);
+            entity.Property(u => u.PasswordSalt).HasMaxLength(256);
+            entity.Property(u => u.Role).HasMaxLength(32);
+            entity.Property(u => u.IsActive).HasDefaultValue(true);
+            entity.HasIndex(u => u.Username).IsUnique();
+        });
+
+        modelBuilder.Entity<AdminSession>(entity =>
+        {
+            entity.ToTable("AdminSessions");
+            entity.HasKey(s => s.Id);
+            entity.Property(s => s.TokenHash).HasMaxLength(128);
+            entity.HasIndex(s => s.TokenHash).IsUnique();
+            entity.HasIndex(s => s.ExpiresAt);
+            entity.HasOne(s => s.User)
+                .WithMany(u => u.Sessions)
+                .HasForeignKey(s => s.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

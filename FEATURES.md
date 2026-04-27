@@ -20,6 +20,44 @@
   - MSSQL local/prod for pages, datasources, rows, submissions, media metadata
   - Filesystem for media binaries
 
+### Aspire orchestration topology (implemented)
+
+```mermaid
+flowchart LR
+    AH["Aspire AppHost"] --> SA["studio-admin (Next.js) :3000"]
+    AH --> BA["builder-api (ASP.NET Minimal API) :5056"]
+    AH --> RM["runtime-mvc (ASP.NET MVC) :5198"]
+
+    SA -->|"BUILDER_API_URL"| BA
+    RM -->|"BuilderApi__BaseUrl"| BA
+
+    BA --> DB["MSSQL LocalDB / SQL Server"]
+    BA --> FS["Filesystem media root"]
+```
+
+### Admin auth/session flow (implemented)
+
+```mermaid
+sequenceDiagram
+    participant U as Author or Editor
+    participant S as Next.js Studio
+    participant B as Builder API
+
+    U->>S: POST /api/auth/login
+    S->>B: POST /api/admin/auth/login
+    B-->>S: sessionToken + role
+    S-->>U: Set-Cookie studio_session
+
+    U->>S: GET /builder/pages/{id}
+    S->>B: GET /api/admin/auth/session (x-admin-session)
+    B-->>S: authenticated + role
+    S-->>U: allow editor or author access
+
+    U->>S: POST /api/pages/{id}/publish
+    S->>B: POST /api/pages/{id}/publish (x-admin-session)
+    B-->>S: 200 for editor / 403 for author
+```
+
 ### End-to-end architecture flow
 
 ```mermaid
@@ -27,7 +65,7 @@ flowchart LR
     U["Author User"] --> S["Next.js Studio /builder/pages/:id"]
     S -->|"Save draft"| N1["/api/pages/:id/draft (Next route)"]
     N1 --> B["Builder API :5056"]
-    B --> DB[("MSSQL")]
+    B --> DB["MSSQL"]
 
     S -->|"Publish"| N2["/api/pages/:id/publish (Next route)"]
     N2 --> T["buildTemplateBundle: HTML + Razor + C# + datasource map"]
@@ -59,6 +97,33 @@ flowchart LR
    - `DataSourceMapJson`
    - `IsCompiled = true`, `Status = published`
 6. On compile failure, API returns error details and does **not** advance page to published/compiled state.
+
+```mermaid
+sequenceDiagram
+    participant U as Authoring User
+    participant S as Next.js Studio
+    participant B as Builder API
+    participant C as Roslyn Compiler
+    participant DB as MSSQL
+
+    U->>S: Click Publish
+    S->>S: buildTemplateBundle(data)
+    S->>B: POST /api/pages/{id}/publish
+    B->>C: Compile generated C# renderer
+    C-->>B: assembly bytes or compile error
+    B->>DB: Save PublishedJson + RazorTemplate + CompiledAssemblyBytes + DataSourceMapJson
+    B-->>S: publish result
+```
+
+```mermaid
+flowchart LR
+    P["Publish request from Studio"] --> B["Builder API publish endpoint"]
+    B --> C["Roslyn compile generated renderer"]
+    C -->|Success| A["Persist RazorTemplate and CompiledAssemblyBytes"]
+    C -->|Failure| E["Return compile errors to editor notification"]
+    A --> V["CSHTML viewer reads RazorTemplate artifact"]
+    A --> R["Runtime render loads CompiledAssemblyBytes"]
+```
 
 ### Page lifecycle flow
 
@@ -97,6 +162,23 @@ stateDiagram-v2
 4. If form sink mapping exists, API writes mapped values to linked datasource table row.
 5. If relay URL exists, API relays request server-to-server and records relay status.
 6. API returns user-facing success HTML response.
+
+```mermaid
+sequenceDiagram
+    participant R as Rendered Browser Form
+    participant B as Builder API
+    participant DB as MSSQL
+    participant X as External Relay URL
+
+    R->>B: POST /api/forms/runtime-submit (+ hidden _pb identifiers)
+    B->>B: Resolve form definition from page JSON
+    B->>DB: Save raw submission payload
+    B->>DB: Insert mapped sink row (if configured)
+    B->>X: Relay request (if actionUrl configured)
+    X-->>B: Relay response status
+    B->>DB: Save relay status code
+    B-->>R: Success HTML response
+```
 
 ### Media flow (filesystem-backed)
 
@@ -270,6 +352,27 @@ Planner should fingerprint datasource definitions (table, filters, sort/order, q
 
 Even when aliased, section-level ViewBag keys must still follow section namespace naming, and map to the aliased result safely.
 
+```mermaid
+flowchart TD
+    I["Section instance with datasource"] --> S["Sanitize section and source names"]
+    S --> K["Build ViewBag key section_source"]
+    I --> F["Build datasource fingerprint"]
+    F --> O{"Alias opt-in enabled?"}
+    O -->|No| Q1["Execute isolated section query"]
+    O -->|Yes| M{"Matching page fingerprint exists?"}
+    M -->|No| Q2["Execute section query"]
+    M -->|Yes| Q3["Reuse aliased result"]
+    Q1 --> B["Increment query budget"]
+    Q2 --> B
+    Q3 --> B
+    B --> R{"Estimated queries > 15?"}
+    R -->|No| G["Show green or amber performance state"]
+    R -->|Yes| W["Show red performance warning"]
+    K --> V["Expose namespaced ViewBag entry"]
+    G --> V
+    W --> V
+```
+
 ### 7) Example namespace outputs
 
 ```text
@@ -305,6 +408,26 @@ x => x.Field == "Value"
 - Generated C# renderer evaluates predicate against datasource rows at runtime
 - Renders `if` branch when true, `else` branch when false
 - Missing/invalid source or predicate fails safely (no throw), resulting in false branch or empty fallback
+
+---
+
+## ForEach List Block (Documented, Planned)
+
+`ForEach` consumes a list datasource and repeats a child block template with an object alias for each row.
+
+Supported child block targets include normal layout/content blocks such as card, table, div, ul, li, and ol.
+
+```mermaid
+flowchart LR
+    E["Editor block: ForEach(source, objectName, childTemplate)"] --> P["Publish emits list template markers"]
+    P --> D["Runtime resolves list datasource rows"]
+    D --> L["Loop rows in order"]
+    L --> B["Bind objectName to current row"]
+    B --> R["Render child template once"]
+    R --> N{"More rows?"}
+    N -->|Yes| L
+    N -->|No| O["Join rendered items into final HTML"]
+```
 
 ---
 
@@ -452,6 +575,26 @@ GET /api/forms/options?pageId=...&formId=...&fieldName=...&parentValue=...
 ```
 
 The endpoint should resolve the published form metadata, validate that the requested field has an allowed datasource option source, apply the cascade filter, and return safe `{ value, label }` options.
+
+```mermaid
+sequenceDiagram
+    participant U as End User
+    participant F as Rendered Form
+    participant B as Builder API
+    participant DB as MSSQL
+
+    U->>F: Change parent select value
+    F->>B: GET /api/forms/options with parentValue
+    B->>DB: Query option datasource with cascade filter
+    DB-->>B: Filtered option rows
+    B-->>F: Safe {value,label} option list
+
+    U->>F: Submit form
+    F->>B: POST /api/forms/runtime-submit
+    B->>DB: Save raw dynamic JSON submission
+    B->>DB: Save mapped sink row when configured
+    B-->>F: Success or validation response
+```
 
 ---
 

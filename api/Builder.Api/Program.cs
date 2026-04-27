@@ -24,6 +24,7 @@ builder.Services.AddDbContext<BuilderDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("BuilderDb")));
 
 builder.Services.AddSingleton<RazorCompiler>();
+builder.Services.AddSingleton<AdminAuthService>();
 builder.Services.AddHttpClient();
 
 builder.Services.ConfigureHttpJsonOptions(options =>
@@ -56,6 +57,49 @@ var allowedMediaMimeTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase
 var contentTypeProvider = new FileExtensionContentTypeProvider();
 
 app.UseCors("BuilderStudio");
+
+const string AdminSessionContextItemKey = "Builder.AdminSessionContext";
+
+app.Use(async (context, next) =>
+{
+    if (!ShouldProtectAdminApiPath(context.Request.Path))
+    {
+        await next();
+        return;
+    }
+
+    var authService = context.RequestServices.GetRequiredService<AdminAuthService>();
+    if (!IsAdminAuthEnabled(authService))
+    {
+        await next();
+        return;
+    }
+
+    var db = context.RequestServices.GetRequiredService<BuilderDbContext>();
+    var session = await ResolveAdminAccessAsync(context.Request, db, authService);
+    if (session is null)
+    {
+        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        await context.Response.WriteAsJsonAsync(new
+        {
+            error = "Authentication required.",
+            authEnabled = true,
+            authenticated = false,
+        });
+        return;
+    }
+
+    context.Items[AdminSessionContextItemKey] = session;
+
+    if (RequiresEditorRole(context.Request.Path) && !session.IsEditor)
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        await context.Response.WriteAsJsonAsync(new { error = "Editor role required." });
+        return;
+    }
+
+    await next();
+});
 
 // ── Schema bootstrap ───────────────────────────────────────────────────────
 using (var scope = app.Services.CreateScope())
@@ -211,9 +255,185 @@ using (var scope = app.Services.CreateScope())
             CREATE UNIQUE INDEX IX_MediaAssets_RelativePath ON MediaAssets (RelativePath);
         END
         """);
+
+    await db.Database.ExecuteSqlRawAsync("""
+        IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'AdminUsers')
+        BEGIN
+            CREATE TABLE AdminUsers (
+                Id uniqueidentifier NOT NULL PRIMARY KEY,
+                Username nvarchar(128) NOT NULL,
+                PasswordHash nvarchar(512) NOT NULL,
+                PasswordSalt nvarchar(256) NOT NULL,
+                Role nvarchar(32) NOT NULL,
+                IsActive bit NOT NULL CONSTRAINT DF_AdminUsers_IsActive DEFAULT(1),
+                CreatedAt datetimeoffset NOT NULL,
+                UpdatedAt datetimeoffset NOT NULL
+            );
+            CREATE UNIQUE INDEX IX_AdminUsers_Username ON AdminUsers (Username);
+        END
+        """);
+
+    await db.Database.ExecuteSqlRawAsync("""
+        IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'AdminSessions')
+        BEGIN
+            CREATE TABLE AdminSessions (
+                Id uniqueidentifier NOT NULL PRIMARY KEY,
+                UserId uniqueidentifier NOT NULL,
+                TokenHash nvarchar(128) NOT NULL,
+                ExpiresAt datetimeoffset NOT NULL,
+                CreatedAt datetimeoffset NOT NULL,
+                RevokedAt datetimeoffset NULL,
+                CONSTRAINT FK_AdminSessions_User FOREIGN KEY (UserId) REFERENCES AdminUsers(Id) ON DELETE CASCADE
+            );
+            CREATE UNIQUE INDEX IX_AdminSessions_TokenHash ON AdminSessions (TokenHash);
+            CREATE INDEX IX_AdminSessions_ExpiresAt ON AdminSessions (ExpiresAt);
+        END
+        """);
+
+    var adminAuth = scope.ServiceProvider.GetRequiredService<AdminAuthService>();
+    await SeedAdminUsersAsync(db, adminAuth);
 }
 
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+
+// ── Admin auth ─────────────────────────────────────────────────────────────
+
+app.MapPost("/api/admin/auth/login", async (
+    AdminLoginRequest request,
+    BuilderDbContext db,
+    AdminAuthService authService) =>
+{
+    if (!IsAdminAuthEnabled(authService))
+    {
+        return Results.Json(
+            new { error = "Studio authentication is not configured.", authEnabled = false },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+
+    var configuredUsers = authService.ResolveConfiguredUsers();
+    if (configuredUsers.Count == 0)
+    {
+        return Results.Conflict(new
+        {
+            error = "Credential-based login is disabled. Configure BuilderAuth users or use legacy token access.",
+        });
+    }
+
+    var username = request.Username?.Trim() ?? "";
+    var password = request.Password ?? "";
+    if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
+    {
+        return Results.BadRequest(new { error = "Username and password are required." });
+    }
+
+    var user = await db.AdminUsers.FirstOrDefaultAsync(u => u.Username == username && u.IsActive);
+    if (user is null ||
+        !AdminAuthService.VerifyPassword(password, user.PasswordHash, user.PasswordSalt))
+    {
+        return Results.Json(
+            new { error = "Invalid username or password." },
+            statusCode: StatusCodes.Status401Unauthorized);
+    }
+
+    var now = DateTimeOffset.UtcNow;
+    var sessionToken = AdminAuthService.CreateSessionToken();
+    var session = new AdminSession
+    {
+        Id = Guid.NewGuid(),
+        UserId = user.Id,
+        TokenHash = AdminAuthService.HashToken(sessionToken),
+        CreatedAt = now,
+        ExpiresAt = now.AddSeconds(authService.SessionTtlSeconds),
+    };
+
+    db.AdminSessions.Add(session);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        ok = true,
+        authEnabled = true,
+        sessionToken,
+        expiresAt = session.ExpiresAt,
+        user = new
+        {
+            username = user.Username,
+            role = AdminAuthService.NormalizeRole(user.Role),
+        },
+    });
+});
+
+app.MapPost("/api/admin/auth/logout", async (
+    HttpRequest request,
+    BuilderDbContext db,
+    AdminAuthService authService) =>
+{
+    if (!IsAdminAuthEnabled(authService))
+    {
+        return Results.Ok(new { ok = true, authEnabled = false });
+    }
+
+    var token = ExtractAdminToken(request);
+    if (string.IsNullOrWhiteSpace(token))
+    {
+        return Results.Ok(new { ok = true, authEnabled = true });
+    }
+
+    if (!TokenMatchesLegacyBuilderToken(token, authService))
+    {
+        var tokenHash = AdminAuthService.HashToken(token);
+        var session = await db.AdminSessions.FirstOrDefaultAsync(s =>
+            s.TokenHash == tokenHash && s.RevokedAt == null);
+        if (session is not null)
+        {
+            session.RevokedAt = DateTimeOffset.UtcNow;
+            await db.SaveChangesAsync();
+        }
+    }
+
+    return Results.Ok(new { ok = true, authEnabled = true });
+});
+
+app.MapGet("/api/admin/auth/session", async (
+    HttpRequest request,
+    BuilderDbContext db,
+    AdminAuthService authService) =>
+{
+    if (!IsAdminAuthEnabled(authService))
+    {
+        return Results.Ok(new
+        {
+            authEnabled = false,
+            authenticated = false,
+        });
+    }
+
+    var session = await ResolveAdminAccessAsync(request, db, authService);
+    if (session is null)
+    {
+        return Results.Json(
+            new
+            {
+                error = "Authentication required.",
+                authEnabled = true,
+                authenticated = false,
+            },
+            statusCode: StatusCodes.Status401Unauthorized);
+    }
+
+    return Results.Ok(new
+    {
+        authEnabled = true,
+        authenticated = true,
+        expiresAt = session.ExpiresAt,
+        viaLegacyToken = session.ViaLegacyToken,
+        user = new
+        {
+            username = session.Username,
+            role = session.Role,
+        },
+    });
+});
 
 // ── Pages ──────────────────────────────────────────────────────────────────
 
@@ -1031,6 +1251,199 @@ app.MapMethods("/api/pages/{id}/render", ["GET", "POST"], async (
 app.Run();
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+static bool IsAdminAuthEnabled(AdminAuthService authService) =>
+    authService.ResolveConfiguredUsers().Count > 0 ||
+    !string.IsNullOrWhiteSpace(authService.LegacyBuilderToken);
+
+static bool ShouldProtectAdminApiPath(PathString path)
+{
+    if (!path.StartsWithSegments("/api"))
+        return false;
+
+    var value = path.Value ?? "";
+    if (value.Equals("/api/form-submissions", StringComparison.OrdinalIgnoreCase))
+        return false;
+    if (value.Equals("/api/forms/runtime-submit", StringComparison.OrdinalIgnoreCase))
+        return false;
+    if (value.Equals("/api/forms/options", StringComparison.OrdinalIgnoreCase))
+        return false;
+    if (value.StartsWith("/api/admin/auth/", StringComparison.OrdinalIgnoreCase))
+        return false;
+
+    return !(value.StartsWith("/api/pages/", StringComparison.OrdinalIgnoreCase) &&
+             value.EndsWith("/render", StringComparison.OrdinalIgnoreCase));
+}
+
+static bool RequiresEditorRole(PathString path)
+{
+    var value = path.Value ?? "";
+    if (!value.StartsWith("/api/pages/", StringComparison.OrdinalIgnoreCase))
+        return false;
+
+    return value.EndsWith("/publish", StringComparison.OrdinalIgnoreCase) ||
+           value.EndsWith("/status", StringComparison.OrdinalIgnoreCase);
+}
+
+static string? ExtractAdminToken(HttpRequest request)
+{
+    var fromHeader = request.Headers["x-admin-session"].FirstOrDefault()?.Trim();
+    if (!string.IsNullOrWhiteSpace(fromHeader))
+        return fromHeader;
+
+    var authorization = request.Headers.Authorization.FirstOrDefault()?.Trim();
+    if (!string.IsNullOrWhiteSpace(authorization) &&
+        authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+    {
+        var bearer = authorization["Bearer ".Length..].Trim();
+        if (!string.IsNullOrWhiteSpace(bearer))
+            return bearer;
+    }
+
+    var legacyHeader = request.Headers["x-builder-token"].FirstOrDefault()?.Trim();
+    if (!string.IsNullOrWhiteSpace(legacyHeader))
+        return legacyHeader;
+
+    var fromCookie = request.Cookies["studio_session"]?.Trim();
+    if (!string.IsNullOrWhiteSpace(fromCookie))
+        return fromCookie;
+
+    var legacyCookie = request.Cookies["builder_token"]?.Trim();
+    if (!string.IsNullOrWhiteSpace(legacyCookie))
+        return legacyCookie;
+
+    var fromQuery = request.Query["token"].FirstOrDefault()?.Trim();
+    return string.IsNullOrWhiteSpace(fromQuery) ? null : fromQuery;
+}
+
+static bool TokenMatchesLegacyBuilderToken(string token, AdminAuthService authService)
+{
+    var legacy = authService.LegacyBuilderToken?.Trim();
+    if (string.IsNullOrWhiteSpace(legacy))
+        return false;
+
+    var tokenBytes = Encoding.UTF8.GetBytes(token.Trim());
+    var legacyBytes = Encoding.UTF8.GetBytes(legacy);
+    if (tokenBytes.Length != legacyBytes.Length)
+        return false;
+
+    return CryptographicOperations.FixedTimeEquals(tokenBytes, legacyBytes);
+}
+
+static async Task<AdminSessionContext?> ResolveAdminAccessAsync(
+    HttpRequest request,
+    BuilderDbContext db,
+    AdminAuthService authService)
+{
+    var token = ExtractAdminToken(request);
+    if (string.IsNullOrWhiteSpace(token))
+        return null;
+
+    if (TokenMatchesLegacyBuilderToken(token, authService))
+    {
+        return new AdminSessionContext(
+            Username: "legacy-token",
+            Role: "editor",
+            ExpiresAt: null,
+            ViaLegacyToken: true);
+    }
+
+    var now = DateTimeOffset.UtcNow;
+    var tokenHash = AdminAuthService.HashToken(token);
+    var session = await db.AdminSessions
+        .AsNoTracking()
+        .Include(s => s.User)
+        .FirstOrDefaultAsync(s =>
+            s.TokenHash == tokenHash &&
+            s.RevokedAt == null &&
+            s.ExpiresAt > now);
+
+    if (session?.User is null || !session.User.IsActive)
+        return null;
+
+    return new AdminSessionContext(
+        Username: session.User.Username,
+        Role: AdminAuthService.NormalizeRole(session.User.Role),
+        ExpiresAt: session.ExpiresAt,
+        ViaLegacyToken: false);
+}
+
+static async Task SeedAdminUsersAsync(BuilderDbContext db, AdminAuthService authService)
+{
+    var configuredUsers = authService.ResolveConfiguredUsers();
+    if (configuredUsers.Count == 0)
+        return;
+
+    var now = DateTimeOffset.UtcNow;
+    var existingUsers = await db.AdminUsers.ToListAsync();
+    var existingLookup = existingUsers.ToDictionary(u => u.Username, StringComparer.OrdinalIgnoreCase);
+    var seenUsernames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    var changed = false;
+
+    foreach (var configured in configuredUsers)
+    {
+        var username = configured.Username.Trim();
+        if (string.IsNullOrWhiteSpace(username) || !seenUsernames.Add(username))
+            continue;
+
+        var role = AdminAuthService.NormalizeRole(configured.Role);
+        if (existingLookup.TryGetValue(username, out var user))
+        {
+            var userChanged = false;
+            var passwordMatches = AdminAuthService.VerifyPassword(
+                configured.Password,
+                user.PasswordHash,
+                user.PasswordSalt);
+
+            if (!passwordMatches)
+            {
+                var (hash, salt) = AdminAuthService.HashPassword(configured.Password);
+                user.PasswordHash = hash;
+                user.PasswordSalt = salt;
+                userChanged = true;
+            }
+
+            if (!user.Role.Equals(role, StringComparison.OrdinalIgnoreCase))
+            {
+                user.Role = role;
+                userChanged = true;
+            }
+
+            if (!user.IsActive)
+            {
+                user.IsActive = true;
+                userChanged = true;
+            }
+
+            if (userChanged)
+            {
+                user.UpdatedAt = now;
+                changed = true;
+            }
+        }
+        else
+        {
+            var (hash, salt) = AdminAuthService.HashPassword(configured.Password);
+            db.AdminUsers.Add(new AdminUser
+            {
+                Id = Guid.NewGuid(),
+                Username = username,
+                PasswordHash = hash,
+                PasswordSalt = salt,
+                Role = role,
+                IsActive = true,
+                CreatedAt = now,
+                UpdatedAt = now,
+            });
+            changed = true;
+        }
+    }
+
+    if (changed)
+    {
+        await db.SaveChangesAsync();
+    }
+}
 
 static async Task<(Page? Page, string? CompileError)> UpsertPage(
     string id,
@@ -2300,4 +2713,13 @@ static string DictValue(IReadOnlyDictionary<string, object?> row, string field)
     var fallback = row.FirstOrDefault(entry =>
         entry.Key.Equals(field, StringComparison.OrdinalIgnoreCase));
     return fallback.Key is null ? "" : fallback.Value?.ToString() ?? "";
+}
+
+sealed record AdminSessionContext(
+    string Username,
+    string Role,
+    DateTimeOffset? ExpiresAt,
+    bool ViaLegacyToken)
+{
+    public bool IsEditor => Role.Equals("editor", StringComparison.OrdinalIgnoreCase);
 }

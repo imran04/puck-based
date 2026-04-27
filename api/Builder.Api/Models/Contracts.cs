@@ -170,6 +170,8 @@ public sealed record PublishPageRequest(
 
 public sealed record UpdatePageStatusRequest(string Status);
 
+public sealed record AdminLoginRequest(string? Username, string? Password);
+
 // ── Media ───────────────────────────────────────────────────────────────────
 
 public sealed record UpdateMediaAssetRequest(
